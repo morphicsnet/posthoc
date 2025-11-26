@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://your.company/hif/schema/v2",
+  "title": "Causal Interaction Hypergraph (HIF) Schema v2",
+  "type": "object",
+  "$comment": "TODO(version2): Align with OpenAPI and keep HIFNode/HIFNodeV2 alias in place until full migration.",
+  "$defs": {
+    "HIFNode": {
+      "type": "object",
+      "description": "Node representing an input concept or an output token",
+      "required": ["id", "type", "text"],
+      "properties": {
+        "id": { "type": "string", "examples": ["c1", "out1"] },
+        "type": { "type": "string", "enum": ["CONCEPT", "OUTPUT"] },
+        "text": { "type": "string", "description": "Surface text for concepts or output token text" },
+        "span": {
+          "type": "object",
+          "description": "Optional character offsets for input concepts",
+          "properties": {
+            "start": { "type": "integer", "minimum": 0 },
+            "end": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["start", "end"],
+          "additionalProperties": false
+        },
+        "metadata": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": false
+    },
+    "HIFNodeV2": {
+      "allOf": [
+        { "$ref": "#/$defs/HIFNode" }
+      ],
+      "description": "Alias of HIFNode for compatibility with OpenAPI components."
+    },
+    "HIFHyperedge": {
+      "type": "object",
+      "description": "Synergistic interaction from a set of source nodes to a target output node",
+      "required": ["id", "source_nodes", "target_node", "weight", "interaction_type"],
+      "properties": {
+        "id": { "type": "string", "examples": ["h1"] },
+        "source_nodes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "examples": [["c1", "c2"]]
+        },
+        "target_node": { "type": "string", "examples": ["out1"] },
+        "weight": {
+          "type": "number",
+          "description": "Synergy weight (e.g., non-linear drop metric)"
+        },
+        "interaction_type": {
+          "type": "string",
+          "enum": ["SYNERGY", "REDUNDANCY", "SUPPRESSION"],
+          "default": "SYNERGY"
+        },
+        "description": { "type": "string" },
+        "evidence": {
+          "type": "object",
+          "description": "Optional raw evidence summary from perturbations (counts, deltas)",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "Hypergraph": {
+      "type": "object",
+      "required": ["nodes", "hyperedges"],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "description": "Array of concept and output nodes",
+          "items": { "$ref": "#/$defs/HIFNode" }
+        },
+        "hyperedges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/HIFHyperedge" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ExplanationResponse": {
+      "type": "object",
+      "required": ["id", "status", "hypergraph"],
+      "properties": {
+        "id": { "type": "string" },
+        "status": { "type": "string", "enum": ["completed"] },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "hypergraph": { "$ref": "#/$defs/Hypergraph" }
+      },
+      "additionalProperties": false,
+      "examples": [
+        {
+          "id": "chatcmpl-123",
+          "status": "completed",
+          "hypergraph": {
+            "nodes": [],
+            "hyperedges": [
+              {
+                "id": "h1",
+                "source_nodes": ["c1", "c2"],
+                "target_node": "out1",
+                "weight": 0.95,
+                "interaction_type": "SYNERGY",
+                "description": "The combination of 'Delete Database' and 'Production' jointly triggered the Refusal."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "ExplanationPending": {
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id": { "type": "string" },
+      "status": { "type": "string", "enum": ["pending"] },
+        "eta_seconds": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "HIFLegacyNode": {
+      "description": "DEPRECATED — v1 node shape kept for backward compatibility",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["sae_feature", "input_token", "output_token", "circuit_supernode"]
+        },
+        "label": { "type": "string" },
+        "layer": { "type": "integer" },
+        "position": { "type": "integer" },
+        "activation_strength": { "type": "number" },
+        "attributes": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "HIFLegacyIncidence": {
+      "description": "DEPRECATED — v1 incidence shape kept for backward compatibility",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "node_ids", "weight"],
+      "properties": {
+        "id": { "type": "string" },
+        "node_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 2,
+          "description": "Node IDs incident to this hyperedge. Order is meaningful if method defines it."
+        },
+        "weight": {
+          "type": "number",
+          "description": "Attribution score (e.g., Shapley, ACDC), typically [0,1]."
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "description": "e.g., 'causal_circuit'" },
+            "method": { "type": "string", "description": "e.g., 'acdc', 'shapley', 'saliency'" },
+            "window": { "type": "string", "description": "span or token window identifier" },
+            "description": { "type": "string" },
+            "provenance": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "capture_layers": {
+                  "type": "array",
+                  "items": { "type": "integer" }
+                },
+                "sae_version": { "type": "string" },
+                "model_hash": { "type": "string" }
+              }
+            }
+          }
+        },
+        "attributes": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "HIFGraphLegacy": {
+      "description": "DEPRECATED — legacy graph structure maintained for backward compatibility",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network-type", "nodes", "incidences"],
+      "properties": {
+        "network-type": {
+          "type": "string",
+          "enum": ["directed"],
+          "description": "Graph directionality. For v1 we support only 'directed'."
+        },
+        "nodes": {
+          "type": "array",
+          "description": "List of nodes (tokens, features, or supernodes).",
+          "items": { "$ref": "#/$defs/HIFLegacyNode" }
+        },
+        "incidences": {
+          "type": "array",
+          "description": "List of hyperedges with node incidences and attribution weight.",
+          "items": { "$ref": "#/$defs/HIFLegacyIncidence" }
+        },
+        "meta": {
+          "type": "object",
+          "description": "Metadata for graph provenance and limits.",
+          "additionalProperties": false,
+          "properties": {
+            "model_name": { "type": "string" },
+            "model_hash": { "type": "string" },
+            "sae_dictionary": { "type": "string" },
+            "granularity": { "type": "string", "enum": ["sentence", "token"] },
+            "created_at": { "type": "string", "format": "date-time" },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "min_edge_weight": { "type": "number" },
+                "max_nodes": { "type": "integer", "minimum": 0 },
+                "max_incidences": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "version": { "type": "string", "const": "hif-1" }
+          },
+          "required": ["version"]
+        }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/Hypergraph" },
+    { "$ref": "#/$defs/ExplanationResponse" },
+    { "$ref": "#/$defs/ExplanationPending" },
+    { "$ref": "#/$defs/HIFGraphLegacy" }
+  ],
+  "examples": [
+    {
+      "id": "chatcmpl-123",
+      "status": "completed",
+      "hypergraph": {
+        "nodes": [],
+        "hyperedges": [
+          {
+            "id": "h1",
+            "source_nodes": ["c1", "c2"],
+            "target_node": "out1",
+            "weight": 0.95,
+            "interaction_type": "SYNERGY",
+            "description": "The combination of 'Delete Database' and 'Production' jointly triggered the Refusal."
+          }
+        ]
+      }
+    },
+    {
+      "network-type": "directed",
+      "nodes": [
+        { "id": "feat_1024", "type": "sae_feature", "label": "Geography: Cities", "layer": 12, "activation_strength": 4.5 },
+        { "id": "token_5", "type": "input_token", "label": "Paris", "position": 5 },
+        { "id": "token_out_1", "type": "output_token", "label": "Paris is the capital of France.", "position": 1 }
+      ],
+      "incidences": [
+        {
+          "id": "e1",
+          "node_ids": ["feat_1024", "token_out_1"],
+          "weight": 0.85,
+          "metadata": {
+            "type": "causal_circuit",
+            "method": "acdc",
+            "window": "sent-1",
+            "provenance": { "capture_layers": [6, 12, 24], "sae_version": "sae-gpt4-2m", "model_hash": "abcd1234" }
+          }
+        }
+      ],
+      "meta": {
+        "model_name": "gpt-4-turbo",
+        "model_hash": "abcd1234",
+        "sae_dictionary": "sae-gpt4-2m",
+        "granularity": "sentence",
+        "created_at": "2025-01-01T00:00:00Z",
+        "limits": { "min_edge_weight": 0.01, "max_nodes": 5000, "max_incidences": 20000 },
+        "version": "hif-1"
+      }
+    }
+  ]
+}

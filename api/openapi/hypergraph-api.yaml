@@ -1,0 +1,687 @@
+openapi: 3.1.0
+info:
+  title: Hypergraph Interpretability API
+  version: "1.0.0"
+  description: >
+    OpenAI-compatible chat completions with asynchronous interpretability sidecar.
+    The chat lane streams tokens immediately. The explanation lane computes a HIF
+    hypergraph asynchronously and exposes it via trace APIs.
+servers:
+  - url: https://api.your-company.com
+    description: Production
+  - url: http://localhost:8080
+    description: Local
+
+paths:
+  /v1/chat/completions:
+    post:
+      summary: Create chat completion (OpenAI-compatible with explainability extensions)
+      operationId: createChatCompletion
+      parameters:
+        - name: x-explain-mode
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: [hypergraph]
+        - name: x-explain-granularity
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: [sentence, token]
+            default: sentence
+        - name: x-explain-features
+          in: header
+          required: false
+          schema:
+            type: string
+            example: sae-gpt4-2m
+        - name: x-explain-budget
+          in: header
+          required: false
+          schema:
+            type: integer
+            description: Max milliseconds compute budget for the explanation
+        - name: x-trace-id
+          in: header
+          required: false
+          schema:
+            type: string
+            description: Optional client-provided ULID to use as trace_id
+        - name: x-idempotency-key
+          in: header
+          required: false
+          schema:
+            type: string
+            description: Idempotency key valid for 24h
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionsRequest'
+      responses:
+        '200':
+          description: Chat completion created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '5XX':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/chat/completions/{id}/explanation:
+    get:
+      summary: Retrieve causal interaction hypergraph (HIF) for a prior chat completion
+      operationId: getChatCompletionExplanation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The request_id/chat completion id
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [hif, raw]
+            default: hif
+          description: Output format. Both return the same structure for now; "raw" reserved for future provider-specific diagnostics.
+      responses:
+        '200':
+          description: Explanation available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExplanationResponse'
+              examples:
+                minimal:
+                  summary: Minimal example
+                  value:
+                    id: chatcmpl-123
+                    status: completed
+                    hypergraph:
+                      nodes: []
+                      hyperedges:
+                        - id: h1
+                          source_nodes:
+                            - c1
+                            - c2
+                          target_node: out1
+                          weight: 0.95
+                          interaction_type: SYNERGY
+                          description: "The combination of 'Delete Database' and 'Production' jointly triggered the Refusal."
+        '202':
+          description: Explanation still processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExplanationPending'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/traces/{trace_id}/status:
+    get:
+      summary: Get explanation status
+      operationId: getTraceStatus
+      parameters:
+        - name: trace_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/traces/{trace_id}/graph:
+    get:
+      summary: Get HIF hypergraph
+      operationId: getTraceGraph
+      parameters:
+        - name: trace_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: HIF JSON
+          headers:
+            Content-Encoding:
+              description: Compression used for response body
+              schema:
+                type: string
+                enum: [gzip, zstd]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HIFGraph'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+
+  /v1/traces/{trace_id}/stream:
+    get:
+      summary: Server-Sent Events stream of trace progress
+      operationId: streamTrace
+      parameters:
+        - name: trace_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: text/event-stream of status_update, partial, complete, error
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/traces/{trace_id}/webhooks:
+    post:
+      summary: Register webhook for completion notification
+      operationId: registerWebhook
+      parameters:
+        - name: trace_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookRegistration'
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookRegistrationResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/traces/{trace_id}:
+    delete:
+      summary: Cancel queued or running explanation
+      operationId: cancelTrace
+      parameters:
+        - name: trace_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Cancellation requested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceStatus'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Gone:
+      description: Resource expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Rate limited
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            description: Seconds until retry
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServerError:
+      description: Server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    ChatCompletionsRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          example: gpt-4-turbo
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        stream:
+          type: boolean
+          default: true
+        temperature:
+          type: number
+          default: 1.0
+        top_p:
+          type: number
+          default: 1.0
+        max_tokens:
+          type: integer
+      required: [model, messages]
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+      required: [role, content]
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: chatcmpl-123
+          description: Identifier of the chat completion. Use with GET /v1/chat/completions/{id}/explanation to retrieve explanation hypergraph.
+        object:
+          type: string
+          example: chat.completion
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatChoice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+        explanation_metadata:
+          $ref: '#/components/schemas/ExplanationMetadata'
+      required: [id, object, choices, explanation_metadata]
+    ChatChoice:
+      type: object
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/ChatMessage'
+        finish_reason:
+          type: string
+    Usage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+    ExplanationMetadata:
+      type: object
+      properties:
+        trace_id:
+          type: string
+        status:
+          type: string
+          enum: [processing, queued, running, partial, complete, failed]
+        estimated_wait:
+          type: string
+          example: "250ms"
+        stream_endpoint:
+          type: string
+          example: "/v1/traces/trc_abc123/stream"
+        granularity:
+          type: string
+          enum: [sentence, token]
+        featureset:
+          type: string
+          example: sae-gpt4-2m
+      required: [trace_id, status, stream_endpoint]
+    TraceStatus:
+      type: object
+      properties:
+        trace_id:
+          type: string
+        state:
+          type: string
+          enum: [queued, running, partial, complete, expired, canceled, failed]
+        progress:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+        stage:
+          type: string
+          description: Current processing stage
+        updated_at:
+          type: string
+          format: date-time
+        s3_key:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        granularity:
+          type: string
+          enum: [sentence, token]
+        featureset:
+          type: string
+      required: [trace_id, state]
+    HIFGraph:
+      type: object
+      properties:
+        network-type:
+          type: string
+          enum: [directed]
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/HIFNode'
+        incidences:
+          type: array
+          items:
+            $ref: '#/components/schemas/HIFIncidence'
+        meta:
+          $ref: '#/components/schemas/HIFMeta'
+      required: [network-type, nodes, incidences]
+    HIFNode:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [sae_feature, input_token, output_token, circuit_supernode]
+        label:
+          type: string
+        layer:
+          type: integer
+          nullable: true
+        position:
+          type: integer
+          nullable: true
+        activation_strength:
+          type: number
+          format: float
+          nullable: true
+        attributes:
+          type: object
+          additionalProperties: true
+    HIFIncidence:
+      type: object
+      properties:
+        id:
+          type: string
+        node_ids:
+          type: array
+          items:
+            type: string
+        weight:
+          type: number
+          format: float
+        metadata:
+          type: object
+          properties:
+            type:
+              type: string
+              example: causal_circuit
+            method:
+              type: string
+              example: acdc
+            window:
+              type: string
+              example: "sent-1"
+            description:
+              type: string
+            provenance:
+              type: object
+              properties:
+                capture_layers:
+                  type: array
+                  items:
+                    type: integer
+                sae_version:
+                  type: string
+                model_hash:
+                  type: string
+          additionalProperties: true
+        attributes:
+          type: object
+          additionalProperties: true
+      required: [id, node_ids, weight]
+    HIFMeta:
+      type: object
+      properties:
+        model_name:
+          type: string
+        model_hash:
+          type: string
+        sae_dictionary:
+          type: string
+        granularity:
+          type: string
+          enum: [sentence, token]
+        created_at:
+          type: string
+          format: date-time
+        limits:
+          type: object
+          properties:
+            min_edge_weight:
+              type: number
+            max_nodes:
+              type: integer
+            max_incidences:
+              type: integer
+        version:
+          type: string
+          example: "hif-1"
+    # TODO(version2): Align schemas with [`libs/hif/schema.json`](libs/hif/schema.json:1) in the alignment task.
+    ExplanationResponse:
+      type: object
+      required:
+        - id
+        - status
+        - hypergraph
+      properties:
+        id:
+          type: string
+          example: chatcmpl-123
+        status:
+          type: string
+          enum:
+            - completed
+        provider:
+          type: string
+          description: Upstream model provider (e.g., "openai")
+        model:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        hypergraph:
+          $ref: '#/components/schemas/Hypergraph'
+    ExplanationPending:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+        eta_seconds:
+          type: integer
+    Hypergraph:
+      type: object
+      required:
+        - nodes
+        - hyperedges
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/HIFNodeV2'
+        hyperedges:
+          type: array
+          items:
+            $ref: '#/components/schemas/HIFHyperedge'
+    HIFNodeV2:
+      type: object
+      description: Node representing an input concept or an output token
+      required:
+        - id
+        - type
+        - text
+      properties:
+        id:
+          type: string
+          example: c1
+        type:
+          type: string
+          enum:
+            - CONCEPT
+            - OUTPUT
+        text:
+          type: string
+          description: Surface text span for concepts or output token text
+        span:
+          type: object
+          description: Optional character offsets for input concepts
+          properties:
+            start:
+              type: integer
+            end:
+              type: integer
+        metadata:
+          type: object
+          additionalProperties: true
+    HIFHyperedge:
+      type: object
+      description: Synergistic interaction from a set of source nodes to a target output node
+      required:
+        - id
+        - source_nodes
+        - target_node
+        - weight
+        - interaction_type
+      properties:
+        id:
+          type: string
+          example: h1
+        source_nodes:
+          type: array
+          items:
+            type: string
+          example:
+            - c1
+            - c2
+        target_node:
+          type: string
+          example: out1
+        weight:
+          type: number
+          format: float
+          description: Synergy weight (e.g., non-linear drop metric)
+          example: 0.95
+        interaction_type:
+          type: string
+          enum:
+            - SYNERGY
+            - REDUNDANCY
+            - SUPPRESSION
+          default: SYNERGY
+        description:
+          type: string
+          example: "The combination of 'Delete Database' and 'Production' jointly triggered the Refusal."
+        evidence:
+          type: object
+          description: Optional raw evidence summary from perturbations (counts, deltas)
+          additionalProperties: true
+    WebhookRegistration:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        secret:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+            enum: [complete, failed]
+      required: [url]
+    WebhookRegistrationResult:
+      type: object
+      properties:
+        id:
+          type: string
+        trace_id:
+          type: string
+        url:
+          type: string
+          format: uri
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+security:
+  - BearerAuth: []
