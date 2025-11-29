@@ -1,0 +1,45 @@
+# Default-deny outside namespace; allow intra-namespace traffic and OTEL/Prom scrapes
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hypergraph.fullname" . }}-default-allow-ns
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hypergraph.name" . }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}        # allow from same namespace
+        - namespaceSelector: {}  # customize to restrict further
+  egress:
+    - to:
+        - namespaceSelector: {}  # allow to same cluster namespace endpoints
+    - {}                         # allow all egress by default; tighten per-env if needed
+---
+# Allow Prometheus Operator and OTEL Collector to scrape if needed
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hypergraph.fullname" . }}-monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hypergraph.name" . }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9090

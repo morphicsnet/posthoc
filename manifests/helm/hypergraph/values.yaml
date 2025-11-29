@@ -1,0 +1,67 @@
+global:
+  appVersion: "0.1.0"
+  imagePullPolicy: IfNotPresent
+  otel:
+    enabled: true
+    otlpEndpoint: "http://otel-collector:4317"
+  statusBackend: json
+  traceTtlDays: 7
+  s3:
+    enabled: false
+    bucket: ""
+    prefix: "traces"
+    kmsKeyId: ""
+  rbacAuthMode: "static"
+  # JSON string; can be plaintext JSON or base64-encoded JSON. See docs/runbooks/secrets_and_keys.md.
+  rbacTokensJson: "{}"
+  rateLimits:
+    readRps: 50
+    readBurst: 200
+    writeRps: 5
+    writeBurst: 20
+
+gateway:
+  image: "yourrepo/hypergraph-gateway:latest"
+  replicas: 3
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  service:
+    type: ClusterIP
+    port: 8080
+  env: {}
+
+explainer:
+  image: "yourrepo/hypergraph-explainer:latest"
+  replicas: 2
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  metricsPort: 9090
+  keda:
+    enabled: true
+    minReplicaCount: 2
+    maxReplicaCount: 16
+    backlogSecondsTarget: 1.0
+  # When running on GPU nodes, set resources.limits/nvidia.com/gpu and add tolerations/affinity externally.
+  env: {}
+
+interceptor:
+  image: "yourrepo/hypergraph-interceptor:latest"
+  replicas: 2
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  env: {}

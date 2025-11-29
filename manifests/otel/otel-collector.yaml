@@ -1,0 +1,69 @@
+# OpenTelemetry Collector - minimal, self-contained config
+# - Receives OTLP (gRPC + HTTP) from services (traces/metrics/logs optional)
+# - Batches and exports traces/logs to stdout
+# - Exposes Prometheus-scrapable metrics endpoint at 0.0.0.0:8889
+# - Example Prometheus Remote Write exporter is included (commented)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+
+exporters:
+  # Human-readable sink for quick verification
+  stdout:
+    verbosity: detailed
+
+  # Prometheus exporter: exposes an HTTP endpoint for Prometheus to scrape
+  # This serves the OTEL Collector's view of metrics it receives
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "otelcol"
+    # If you want to add external labels to all series, set:
+    # const_labels:
+    #   cluster: "dev"
+    #   service: "otelcol"
+
+  # Example: Prometheus Remote Write (disabled by default)
+  # prometheusremotewrite:
+  #   endpoint: "http://prometheus:9090/api/v1/write"
+  #   # Optional TLS/auth/headers here
+
+service:
+  telemetry:
+    logs:
+      level: "info"
+
+  pipelines:
+    # Traces: receive via OTLP, batch, and export to stdout
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [stdout]
+
+    # Metrics: receive via OTLP, batch, and expose via Prometheus exporter (and stdout for debugging)
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus, stdout]
+
+    # Logs (optional): receive via OTLP and print to stdout
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [stdout]
+
+# Notes:
+# - Point applications at:
+#   - gRPC:  http://otel-collector:4317
+#   - HTTP:  http://otel-collector:4318
+# - Prometheus can scrape the Collector's metrics at:
+#   - http://otel-collector:8889/metrics
+# - The gateway service provides /metrics natively at :8080/metrics
+#   and the explainer provides /metrics via its embedded server on :9090 by default.

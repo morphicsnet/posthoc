@@ -31,6 +31,25 @@ import json
 import logging
 import os
 
+# PII scrubbing for any log copies (see docs/security/SECURITY.md)
+try:
+    from libs.sanitize.pii import sanitize_message as _sanitize_message  # type: ignore
+except Exception:
+    def _sanitize_message(s: str) -> str:
+        try:
+            return s if isinstance(s, str) else str(s)
+        except Exception:
+            return ""
+
+# Observability (optional)
+try:
+    from services.explainer.src import otel as _otel  # type: ignore
+except Exception:
+    try:
+        import otel as _otel  # type: ignore
+    except Exception:
+        _otel = None  # type: ignore
+
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()
@@ -47,6 +66,101 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 from collections import OrderedDict
 import hashlib
+
+# Backpressure (optional)
+try:
+    from services.explainer.src.backpressure import BackpressureController, BackpressureConfig, BackpressureState  # type: ignore
+except Exception:
+    try:
+        from backpressure import BackpressureController, BackpressureConfig, BackpressureState  # type: ignore
+    except Exception:
+        BackpressureController = None  # type: ignore
+        BackpressureConfig = None  # type: ignore
+        BackpressureState = None  # type: ignore
+
+class _LocalQueueRef:
+    def __init__(self) -> None:
+        self._per_tenant_running: Dict[str, int] = {}
+        self._per_tenant_queued: Dict[str, int] = {}
+        self._throughput_ema: Dict[str, float] = {"sentence": 20.0, "token": 10.0}
+    def queue_len_tenant(self, tenant_id: str) -> int:
+        return int(self._per_tenant_queued.get(str(tenant_id), 0))
+    def queue_len_global(self) -> int:
+        return int(sum(self._per_tenant_queued.values()))
+    def backlog_seconds(self, granularity: str) -> Optional[float]:
+        return None
+    def throughput_estimate(self, granularity: str) -> Optional[float]:
+        return float(self._throughput_ema.get(str(granularity), 10.0))
+    def running_for_tenant(self, tenant_id: str) -> int:
+        return int(self._per_tenant_running.get(str(tenant_id), 0))
+    def incr_running(self, tenant_id: str) -> None:
+        t = str(tenant_id)
+        self._per_tenant_running[t] = self._per_tenant_running.get(t, 0) + 1
+    def decr_running(self, tenant_id: str) -> None:
+        t = str(tenant_id)
+        self._per_tenant_running[t] = max(0, self._per_tenant_running.get(t, 0) - 1)
+
+_BP_QUEUE = _LocalQueueRef()
+_BP_CTRL = None
+def _bp_cfg_from_env() -> Optional["BackpressureConfig"]:
+    try:
+        if BackpressureConfig is None:
+            return None
+        ladder_env = os.getenv("BP_DEGRADE_LADDER", "token->sentence,reduce-samples,reduce-topk,reduce-layers,saliency-fallback,drop")
+        ladder = [s.strip() for s in ladder_env.split(",") if s.strip()]
+        return BackpressureConfig(
+            max_backlog_seconds_sentence=float(os.getenv("BP_MAX_BACKLOG_SENTENCE", "1.5")),
+            max_backlog_seconds_token=float(os.getenv("BP_MAX_BACKLOG_TOKEN", "3.0")),
+            max_queue_len_per_tenant=int(os.getenv("BP_MAX_QUEUE_TENANT", "200")),
+            max_queue_len_global=int(os.getenv("BP_MAX_QUEUE_GLOBAL", "5000")),
+            degrade_ladder=ladder,
+            tenant_minimum_guarantee=int(os.getenv("BP_TENANT_MIN_GUARANTEE", "2")),
+            burst_multiplier=float(os.getenv("BP_BURST_MULTIPLIER", "1.5")),
+        )
+    except Exception:
+        return BackpressureConfig() if BackpressureConfig is not None else None
+
+try:
+    if BackpressureController is not None and BackpressureConfig is not None:
+        _BP_CTRL = BackpressureController(_BP_QUEUE, metrics_hook=None, cfg=_bp_cfg_from_env())
+except Exception:
+    _BP_CTRL = None
+
+# Runtime SAE overrides (set per-envelope by process_envelope)
+_BP_RUNTIME_OVERRIDES: Dict[str, Any] = {}
+
+# Attribution strategies (budgeted)
+try:
+    from services.explainer.src.attribution import AttributionConfig, sentence_attribution, token_attribution  # type: ignore
+except Exception:
+    try:
+        from attribution import AttributionConfig, sentence_attribution, token_attribution  # type: ignore
+    except Exception:
+        AttributionConfig = None  # type: ignore
+        sentence_attribution = None  # type: ignore
+        token_attribution = None  # type: ignore
+
+# Hypergraph constructor/pruner (HIF v1 legacy)
+try:
+    from services.explainer.src.hypergraph import (  # type: ignore
+        HypergraphConfig as HGConfig,
+        prune_and_group as hg_prune_and_group,
+        build_hif as hg_build_hif,
+        validate_hif as hg_validate_hif,
+    )
+except Exception:
+    try:
+        from hypergraph import (  # type: ignore
+            HypergraphConfig as HGConfig,
+            prune_and_group as hg_prune_and_group,
+            build_hif as hg_build_hif,
+            validate_hif as hg_validate_hif,
+        )
+    except Exception:
+        HGConfig = None  # type: ignore
+        hg_prune_and_group = None  # type: ignore
+        hg_build_hif = None  # type: ignore
+        hg_validate_hif = None  # type: ignore
 
 # Optional HTTP clients for future SHADOW_ENDPOINT usage (not used in this task)
 try:
@@ -70,6 +184,102 @@ try:
 except Exception:
     redis = None  # type: ignore
 
+# Persistence: S3 and StatusStore (optional, import-guarded)
+try:
+    from services.explainer.src.s3_store import S3Store as NewS3Store  # type: ignore
+except Exception:
+    try:
+        from s3_store import S3Store as NewS3Store  # type: ignore
+    except Exception:
+        NewS3Store = None  # type: ignore
+
+try:
+    from services.explainer.src.status_store import (  # type: ignore
+        get_status_store_from_env,
+        StatusStore as _StatusStore,
+        TraceStatusItem as _TraceStatusItem,
+    )
+except Exception:
+    try:
+        from status_store import (  # type: ignore
+            get_status_store_from_env,
+            StatusStore as _StatusStore,
+            TraceStatusItem as _TraceStatusItem,
+        )
+    except Exception:
+        get_status_store_from_env = None  # type: ignore
+        _StatusStore = None  # type: ignore
+        _TraceStatusItem = dict  # type: ignore
+
+# Expose S3Store symbol for legacy paths (DEV pipeline)
+S3Store = NewS3Store  # type: ignore
+
+# Status store helpers
+_STATUS_STORE: Optional[_StatusStore] = None
+
+def _get_status_store() -> Optional[_StatusStore]:
+    global _STATUS_STORE
+    if get_status_store_from_env is None:
+        return None
+    if _STATUS_STORE is None:
+        try:
+            _STATUS_STORE = get_status_store_from_env()  # type: ignore
+        except Exception:
+            _STATUS_STORE = None
+    return _STATUS_STORE
+
+def _ttl_days() -> int:
+    try:
+        d = int(os.getenv("TRACE_TTL_DAYS", "7"))
+        return d if d > 0 else 7
+    except Exception:
+        return 7
+
+def _now_epoch() -> float:
+    return time.time()
+
+# ----------------------------
+# Chaos control (import-guarded)
+# ----------------------------
+_CHAOS_PATH_DEFAULT = "/tmp/hif/chaos.json"
+_CHAOS_CACHE = {"flags": {}, "last_mtime": 0.0, "last_checked": 0.0}
+
+def _read_chaos_flags(path: str = None) -> Dict[str, Any]:
+    """Best-effort read of chaos control file. Returns dict of flags."""
+    p = path or os.getenv("CHAOS_CONTROL_PATH", _CHAOS_PATH_DEFAULT)
+    try:
+        st = os.stat(p)
+        mtime = float(getattr(st, "st_mtime", 0.0))
+    except Exception:
+        return {}
+    try:
+        if _CHAOS_CACHE.get("last_mtime", 0.0) == mtime:
+            return dict(_CHAOS_CACHE.get("flags", {}))
+    except Exception:
+        pass
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            _CHAOS_CACHE["flags"] = data
+            _CHAOS_CACHE["last_mtime"] = mtime
+            return dict(data)
+    except Exception:
+        return {}
+    return {}
+
+def _chaos_flag(cfg: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """Return subconfig for a flag or {}."""
+    v = cfg.get(name)
+    return v if isinstance(v, dict) else {}
+
+def _chaos_hit(prob_percent: float) -> bool:
+    """Return True with prob_percent% probability."""
+    try:
+        p = max(0.0, min(100.0, float(prob_percent)))
+    except Exception:
+        p = 0.0
+    return (p > 0.0) and (random.random() * 100.0 < p)
 
 # ----------------------------
 # Environment configuration
@@ -203,6 +413,51 @@ class Config:
 
 CONFIG = Config()
 
+# --- Security Audit Logger (explainer) ---
+_AUDIT_ENABLED = (os.getenv("AUDIT_LOG_ENABLE", "0") or "0") == "1"
+_AUDIT_PATH = os.getenv("AUDIT_LOG_PATH", "/var/log/hypergraph/audit.log")
+_AUDIT_FH = None  # type: ignore
+_AUDIT_USING_STDOUT = False
+
+def _audit_init_worker() -> None:
+    global _AUDIT_FH, _AUDIT_USING_STDOUT
+    if not _AUDIT_ENABLED:
+        return
+    try:
+        d = os.path.dirname(_AUDIT_PATH) or "."
+        os.makedirs(d, exist_ok=True)
+        _AUDIT_FH = open(_AUDIT_PATH, "a", encoding="utf-8")
+    except Exception:
+        _AUDIT_FH = None
+        _AUDIT_USING_STDOUT = True
+
+def emit_audit_worker(event: str, tenant_id: str, trace_id: str, status: Optional[str] = None, reason: Optional[str] = None, extra: Optional[Dict[str, Any]] = None) -> None:
+    if not _AUDIT_ENABLED:
+        return
+    try:
+        rec = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "service": "explainer",
+            "event": event,
+            "tenant_id": str(tenant_id or "unknown"),
+            "trace_id": str(trace_id or "unknown"),
+            "status": status,
+        }
+        if reason:
+            rec["reason"] = str(reason)
+        if isinstance(extra, dict) and extra:
+            for k, v in list(extra.items())[:8]:
+                if isinstance(v, (str, int, float, bool)) or v is None:
+                    rec[k] = v
+        line = json.dumps(rec, separators=(",", ":"), ensure_ascii=False)
+        if _AUDIT_FH is not None:
+            _AUDIT_FH.write(line + "\n")
+            _AUDIT_FH.flush()
+        else:
+            print(line)
+    except Exception:
+        pass
+
 
 def setup_logging(level: str) -> logging.Logger:
     logging.basicConfig(
@@ -217,6 +472,71 @@ def setup_logging(level: str) -> logging.Logger:
     except Exception:
         pass
     return logging.getLogger("explainer.worker")
+
+
+# ----------------------------
+# SAE decode microservice (optional)
+# ----------------------------
+
+_SAE_SERVICE: Optional[Any] = None
+
+async def _init_sae_service_from_env(logger: logging.Logger) -> Optional[Any]:
+    """
+    Initialize and start SAEDecodeService if ENABLE_SAE_SERVICE=1 and DICT_ROOT is set.
+    Import is guarded and torch is not required.
+    """
+    try:
+        enabled = os.getenv("ENABLE_SAE_SERVICE", "0") == "1"
+        dict_root = (os.getenv("DICT_ROOT", "") or "").strip()
+        if not enabled or not dict_root:
+            return None
+
+        # Import inside function to avoid hard dependency at import time
+        try:
+            try:
+                from services.explainer.src.sae_service import SAEDecodeService, SAEDecodeConfig  # type: ignore
+            except Exception:
+                from sae_service import SAEDecodeService, SAEDecodeConfig  # type: ignore
+        except Exception as e:
+            logger.warning(f"SAE service import unavailable: {e}; disabled")
+            return None
+
+        def _env_int(name: str, default_val: int) -> int:
+            v = os.getenv(name, str(default_val))
+            try:
+                return int(v)
+            except Exception:
+                return int(default_val)
+
+        cfg = SAEDecodeConfig(
+            dict_root=dict_root,
+            dictionary_name=os.getenv("DICT_NAME", "sae-gpt4-2m"),
+            device=os.getenv("SAE_DEVICE", "auto"),
+            dtype=os.getenv("SAE_DTYPE", "fp16"),
+            cache_layers=_env_int("SAE_CACHE_LAYERS", 3),
+            batch_size=_env_int("SAE_BATCH_SIZE", 32),
+            max_wait_ms=_env_int("SAE_MAX_WAIT_MS", 8),
+            topk=_env_int("SAE_TOPK", 256),
+            tile_rows=_env_int("SAE_TILE_ROWS", 65536),
+        )
+        svc = SAEDecodeService(cfg)
+        await svc.start()
+        global _SAE_SERVICE
+        _SAE_SERVICE = svc
+        logger.info(f"SAE decode service enabled: device={svc._device} dict={cfg.dictionary_name}")
+        return svc
+    except Exception as e:
+        logger.warning(f"Failed to init SAE service: {e}")
+        return None
+
+async def _stop_sae_service() -> None:
+    try:
+        global _SAE_SERVICE
+        if _SAE_SERVICE is not None:
+            await _SAE_SERVICE.stop()  # type: ignore
+            _SAE_SERVICE = None
+    except Exception:
+        _SAE_SERVICE = None
 
 
 # ----------------------------
@@ -1668,6 +1988,16 @@ def persist_result(
     """
     logger = logging.getLogger("explainer.worker")
     try:
+        # Chaos: drop-s3 -> simulate persistence failures (caught below)
+        try:
+            _flags = _read_chaos_flags()
+            _drop = _chaos_flag(_flags, "drop-s3")
+            if _drop.get("enabled", True) and _chaos_hit(_drop.get("percent", 0)):
+                raise RuntimeError("chaos_drop_persist")
+        except Exception:
+            # ignore control file errors; only intentional raises should bubble
+            pass
+
         hypergraph_json = json.dumps(hypergraph) if isinstance(hypergraph, dict) else None
         upsert_explanation(
             request_id=request_id,
@@ -1679,6 +2009,13 @@ def persist_result(
         )
     except Exception as e:
         logger.error(f"[persist] DB write failed for request_id={request_id}: {e}")
+        # Reflect failure in status store when available
+        try:
+            _st = _get_status_store()
+            if _st is not None:
+                _st.update_fields(str(request_id), state="failed", error=str(e))  # type: ignore
+        except Exception:
+            pass
     finally:
         if status == "completed":
             logger.info(
@@ -1825,32 +2162,98 @@ class AsyncWorker:
                                 await self._redis.xack(stream, group, message_id)
                                 acked = True
                                 self.logger.info(f"XACK message_id={message_id}")
+                                try:
+                                    emit_audit_worker("trace.complete", tenant_id="unknown", trace_id=str(req_id), status="complete")
+                                except Exception:
+                                    pass
+                                try:
+                                    emit_audit_worker("trace.complete", tenant_id="unknown", trace_id=str(req_id), status="complete")
+                                except Exception:
+                                    pass
+                                try:
+                                    emit_audit_worker("trace.complete", tenant_id="unknown", trace_id=str(req_id), status="complete")
+                                except Exception:
+                                    pass
                                 continue
 
                             payload = parse_payload(payload_raw)
                             req_id = payload["request_id"]
                             provider = payload.get("provider")
                             model = payload.get("model")
+                            # Queue lag observation from created_at
+                            try:
+                                created = payload.get("created_at")
+                                lag_s = 0.0
+                                if isinstance(created, str) and created:
+                                    try:
+                                        from datetime import datetime
+                                        if created.endswith("Z"):
+                                            dt = datetime.fromisoformat(created.replace("Z","+00:00"))
+                                        else:
+                                            dt = datetime.fromisoformat(created)
+                                        lag_s = max(0.0, (time.time() - dt.timestamp()))
+                                    except Exception:
+                                        pass
+                                if _otel is not None:
+                                    _otel.queue_lag(lag_s)
+                            except Exception:
+                                pass
 
                             self.logger.info(f"Processing request_id={req_id} provider={provider} model={model} message_id={message_id}")
+                            try:
+                                emit_audit_worker(
+                                    "trace.running",
+                                    tenant_id="unknown",
+                                    trace_id=str(req_id),
+                                    status="running",
+                                    extra={"provider": str(provider), "model": str(model)},
+                                )
+                            except Exception:
+                                pass
 
                             # Stage timings
                             t0 = time.perf_counter()
                             concepts = concept_extraction(payload)
                             t1 = time.perf_counter()
                             self.logger.info(f"Stage concept_extraction duration_ms={(t1 - t0)*1000:.2f}")
+                            try:
+                                if _otel is not None:
+                                    _otel.stage_duration("extract", float(t1 - t0))
+                            except Exception:
+                                pass
 
                             hyperedges = interaction_discovery(payload, concepts)
                             t2 = time.perf_counter()
                             self.logger.info(f"Stage interaction_discovery duration_ms={(t2 - t1)*1000:.2f}")
+                            try:
+                                if _otel is not None:
+                                    _otel.stage_duration("decode", float(t2 - t1))
+                            except Exception:
+                                pass
 
                             verified = verify_top_k(payload, hyperedges, k)
                             t3 = time.perf_counter()
                             self.logger.info(f"Stage verify_top_k duration_ms={(t3 - t2)*1000:.2f}")
+                            try:
+                                if _otel is not None:
+                                    _otel.stage_duration("attribution", float(t3 - t2))
+                            except Exception:
+                                pass
 
                             hypergraph = build_hypergraph(concepts, verified, response_text=payload.get("response", ""))
                             t4 = time.perf_counter()
                             self.logger.info(f"Stage build_hypergraph duration_ms={(t4 - t3)*1000:.2f}")
+                            try:
+                                if _otel is not None:
+                                    _otel.stage_duration("prune", float(t4 - t3))
+                                    try:
+                                        nn = len(hypergraph.get("nodes", [])) if isinstance(hypergraph, dict) else 0
+                                        ee = len(hypergraph.get("hyperedges", [])) if isinstance(hypergraph, dict) else 0
+                                        _otel.hif_counts(nn, ee)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
 
                             persist_result(
                                 req_id,
@@ -1862,11 +2265,21 @@ class AsyncWorker:
                             )
                             t5 = time.perf_counter()
                             self.logger.info(f"Stage persist_result duration_ms={(t5 - t4)*1000:.2f}")
+                            try:
+                                if _otel is not None:
+                                    _otel.stage_duration("persist", float(t5 - t4))
+                            except Exception:
+                                pass
 
                             # Success: XACK
                             await self._redis.xack(stream, group, message_id)
                             acked = True
                             self.logger.info(f"XACK message_id={message_id}")
+                            try:
+                                if _otel is not None:
+                                    _otel.job_state("completed", "unknown", "unknown")
+                            except Exception:
+                                pass
 
                         except asyncio.CancelledError:
                             raise
@@ -1876,6 +2289,11 @@ class AsyncWorker:
                             try:
                                 rid = fields.get("request_id") or "unknown"
                                 persist_result(str(rid), status="failed", hypergraph=None)
+                            except Exception:
+                                pass
+                            try:
+                                if _otel is not None:
+                                    _otel.job_state("failed", "unknown", "unknown")
                             except Exception:
                                 pass
                         finally:
@@ -2061,14 +2479,25 @@ class SyncWorker:
 
 
 async def _run_worker_async(cfg: Config, logger: logging.Logger) -> None:
+    # Optional SAE decode microservice startup (runs in-process)
+    service = await _init_sae_service_from_env(logger)
+
     if AsyncRedis is None:
         logger.warning("redis.asyncio not available; falling back to sync worker")
-        sw = SyncWorker(cfg, logger)
-        sw.run()
+        try:
+            sw = SyncWorker(cfg, logger)
+            sw.run()
+        finally:
+            if service is not None:
+                await _stop_sae_service()
         return
 
     worker = AsyncWorker(cfg, logger)
-    await worker.run()
+    try:
+        await worker.run()
+    finally:
+        if service is not None:
+            await _stop_sae_service()
 
 
 def worker_main() -> None:
@@ -2108,51 +2537,7 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-class S3Store:
-    """
-    Persist HIF artifacts to S3 if boto3 is available and S3_BUCKET is set,
-    otherwise fallback to local gzip files in /tmp/hif.
-    """
-
-    def __init__(self, bucket: Optional[str] = None, prefix: str = "traces"):
-        self.bucket = bucket or os.getenv("S3_BUCKET")
-        self.prefix = os.getenv("S3_PREFIX", prefix)
-        self._boto3 = None
-        if self.bucket:
-            try:
-                import boto3  # type: ignore
-
-                self._boto3 = boto3
-                self._s3 = boto3.client("s3")
-            except Exception as e:
-                print(f"[S3Store] boto3 unavailable or init failed: {e}", file=sys.stderr)
-                self._boto3 = None
-                self.bucket = None
-
-        # local fallback dir
-        self._local_dir = pathlib.Path("/tmp/hif")
-        self._local_dir.mkdir(parents=True, exist_ok=True)
-
-    def put_json_gz(self, trace_id: str, payload: Dict[str, Any]) -> str:
-        data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        gz_bytes = gzip.compress(data, compresslevel=5)
-
-        if self.bucket and self._boto3:
-            key = f"{self.prefix}/{trace_id}.json.gz"
-            self._s3.put_object(
-                Bucket=self.bucket,
-                Key=key,
-                Body=gz_bytes,
-                ContentType="application/json",
-                ContentEncoding="gzip",
-            )
-            print(f"[S3Store] wrote s3://{self.bucket}/{key}")
-            return f"s3://{self.bucket}/{key}"
-        else:
-            fp = self._local_dir / f"{trace_id}.json.gz"
-            fp.write_bytes(gz_bytes)
-            print(f"[S3Store] wrote {fp}")
-            return str(fp)
+# S3Store moved to services.explainer.src.s3_store (imported above as NewS3Store)
 
 
 def build_hif(
@@ -2200,8 +2585,112 @@ async def fetch_activation_shards_stub(trace_id: str) -> Dict[str, Any]:
 
 async def sae_decode_stub(activations: Dict[str, Any], featureset: str) -> Dict[str, float]:
     """
-    Placeholder SAE decode. Returns a few synthetic 'feature_id: activation_strength'.
+    SAE decode adapter.
+
+    Behavior:
+    - Preferred (if enabled): Use in-process SAEDecodeService for batched projection.
+    - Optional: if USE_SAE_LOADER=1 and DICT_ROOT is valid, use CPU project_topk loader path.
+    - Else: legacy synthetic features.
     """
+    logger = logging.getLogger("explainer.worker")
+
+    # Chaos: slow-sae -> add artificial latency/jitter before decode
+    try:
+        _flags = _read_chaos_flags()
+        _slow = _chaos_flag(_flags, "slow-sae")
+        if _slow.get("enabled", True) and _chaos_hit(_slow.get("percent", 0)):
+            base_ms = float(_slow.get("jitter_ms", 150) or 150.0)
+            low = max(0.0, base_ms * 0.5)
+            high = max(low, base_ms * 1.5)
+            delay = random.uniform(low, high) / 1000.0
+            await asyncio.sleep(delay)
+    except Exception:
+        # never break pipeline on chaos control read errors
+        pass
+
+    # 1) Service-enabled path
+    try:
+        if os.getenv("ENABLE_SAE_SERVICE", "0") == "1":
+            # Ensure service initialized
+            try:
+                if _SAE_SERVICE is None:
+                    await _init_sae_service_from_env(logger)
+            except Exception:
+                pass
+            if _SAE_SERVICE is not None:
+                try:
+                    layer_idx = int(os.getenv("SAE_LAYER", "12"))
+                except Exception:
+                    layer_idx = 12
+                # Probe hidden_dim using service's dictionary representation
+                try:
+                    lw = _SAE_SERVICE._get_layer_rep(layer_idx)  # type: ignore[attr-defined]
+                    _, hidden_dim = lw.shape
+                except Exception as e:
+                    logger.warning(f"SAE service layer probe failed; falling back to loader/stub: {e}")
+                    raise
+                # Deterministic probe vector from trace_id
+                seed_src = str(activations.get("trace_id") or "0")
+                seed_int = int(hashlib.sha256(seed_src.encode("utf-8")).hexdigest()[:8], 16)
+                try:
+                    import numpy as _np  # type: ignore
+                    rng = _np.random.default_rng(seed_int)  # type: ignore
+                    probe = rng.standard_normal(hidden_dim, dtype=_np.float32)  # type: ignore
+                except Exception:
+                    r = random.Random(seed_int)
+                    probe = [r.uniform(-1.0, 1.0) for _ in range(hidden_dim)]
+                res = await _SAE_SERVICE.decode(layer_idx, probe)  # type: ignore
+                return {f"feat_{int(i)}": float(s) for (i, s) in res.items()}
+    except Exception as e:
+        logger.warning(f"SAE service path failed; continuing with optional loader: {e}")
+
+    # 2) Optional loader CPU fallback (legacy)
+    try:
+        use_loader = os.getenv("USE_SAE_LOADER", "0") == "1"
+        dict_root = (os.getenv("DICT_ROOT", "") or "").strip()
+        dict_name = (featureset or "sae-gpt4-2m") if isinstance(featureset, str) and featureset else "sae-gpt4-2m"
+        if use_loader and dict_root:
+            try:
+                from libs.sae.loader import SAEConfig, load_dictionary, project_topk  # type: ignore
+                cfg = SAEConfig(root_path=dict_root, dictionary_name=dict_name, device="auto", dtype="fp16", prefer_sparse=True, cache_layers=2)
+                dct = load_dictionary(cfg)
+                try:
+                    layer_idx = int(os.getenv("SAE_LAYER", "12"))
+                except Exception:
+                    layer_idx = 12
+                layer = dct.get_layer(layer_idx)
+                _, hidden_dim = layer.shape
+                seed_src = str(activations.get("trace_id") or "0")
+                seed_int = int(hashlib.sha256(seed_src.encode("utf-8")).hexdigest()[:8], 16)
+                try:
+                    import numpy as _np  # type: ignore
+                    rng = _np.random.default_rng(seed_int)  # type: ignore
+                    probe = rng.standard_normal(hidden_dim, dtype=_np.float32)  # type: ignore
+                except Exception:
+                    r = random.Random(seed_int)
+                    probe = [r.uniform(-1.0, 1.0) for _ in range(hidden_dim)]
+                topk = 256
+                try:
+                    topk = max(1, int(os.getenv("SAE_TOPK", "256")))
+                except Exception:
+                    topk = 256
+                # Apply backpressure override if present
+                try:
+                    ov = _BP_RUNTIME_OVERRIDES.get("sae_topk")
+                    if ov is not None:
+                        topk = max(1, min(int(topk), int(ov)))
+                except Exception:
+                    pass
+                top = project_topk(layer, probe, k=topk)
+                return {f"feat_{int(i)}": float(s) for (i, s) in top}
+            except Exception as e:
+                logger.warning(f"SAE loader unavailable or failed (falling back to stub): {e}")
+        elif use_loader and not dict_root:
+            logger.info("USE_SAE_LOADER=1 but DICT_ROOT not set; using stub path")
+    except Exception as e:
+        logger.warning(f"sae_decode_stub optional loader path encountered an error; using stub: {e}")
+
+    # 3) Legacy stub
     await asyncio.sleep(0.02)
     return {
         "feat_1024": 4.5,
@@ -2257,15 +2746,290 @@ async def process_envelope(envelope: Dict[str, Any], store: S3Store) -> Dict[str
     featureset = envelope.get("featureset", "sae-gpt4-2m")
     model_hash = envelope.get("model_hash", "unknown")
     model_name = envelope.get("model_name", "unknown")
+    tenant_id = str(envelope.get("tenant_id") or "anon")
+
+    # Backpressure evaluation (early) and runtime overrides
+    bp = None
+    try:
+        if _BP_CTRL is not None:
+            bp = _BP_CTRL.evaluate(tenant_id, granularity)  # type: ignore
+    except Exception:
+        bp = None
+
+    # Chaos: rate-limit-spike -> escalate backpressure severity (soft->hard)
+    try:
+        _flags = _read_chaos_flags()
+        _rl_cfg = _chaos_flag(_flags, "rate-limit-spike")
+        if _rl_cfg.get("enabled", True) and (_rl_cfg.get("severity") in ("soft", "hard") or _rl_cfg):
+            target = str(_rl_cfg.get("severity") or "hard").lower()
+            # Create minimal stub if controller/state types not available
+            if bp is None:
+                class _BPStub:
+                    def __init__(self, level: str, actions: List[str]) -> None:
+                        self.level = level
+                        self.actions = actions
+                bp = _BPStub(level="normal", actions=[])  # type: ignore
+            # Escalate
+            lvl = getattr(bp, "level", "normal")
+            if target == "hard":
+                setattr(bp, "level", "hard")
+                acts = set(list(getattr(bp, "actions", [])) + ["reduce-samples", "reduce-topk", "reduce-layers", "saliency-fallback", "drop"])
+                setattr(bp, "actions", list(acts))
+            elif target == "soft" and lvl == "normal":
+                setattr(bp, "level", "soft")
+                acts = set(list(getattr(bp, "actions", [])) + ["reduce-samples", "reduce-topk"])
+                setattr(bp, "actions", list(acts))
+    except Exception:
+        pass
+
+    # Apply token->sentence downgrade if advised
+    granularity_downgraded = False
+    try:
+        if bp is not None and "token->sentence" in bp.actions and str(granularity).lower() == "token":
+            granularity = "sentence"
+            granularity_downgraded = True
+    except Exception:
+        pass
+
+    # SAE runtime overrides for service/loader paths
+    try:
+        _BP_RUNTIME_OVERRIDES.clear()
+        if bp is not None:
+            if "reduce-topk" in bp.actions:
+                _BP_RUNTIME_OVERRIDES["sae_topk"] = 64 if bp.level == "hard" else 128
+            if "reduce-layers" in bp.actions:
+                _BP_RUNTIME_OVERRIDES["sae_cache_layers"] = 1 if bp.level == "hard" else 2
+    except Exception:
+        pass
+
+    # Surface bp state and optionally shed early
+    try:
+        _st_tmp = _get_status_store()
+        if _st_tmp is not None and bp is not None:
+            _st_tmp.update_fields(  # type: ignore
+                trace_id,
+                bp_level=bp.level,
+                bp_actions=list(bp.actions),
+                granularity_downgraded=granularity_downgraded,
+            )
+    except Exception:
+        pass
+
+    if bp is not None and "drop" in bp.actions:
+        try:
+            _st_tmp2 = _get_status_store()
+            if _st_tmp2 is not None:
+                _st_tmp2.update_fields(trace_id, state="shed", error="backpressure_dropped")  # type: ignore
+        except Exception:
+            pass
+        try:
+            emit_audit_worker("trace.canceled", tenant_id=tenant_id, trace_id=trace_id, status="canceled", reason="backpressure_dropped")
+        except Exception:
+            pass
+        return {
+            "trace_id": trace_id,
+            "state": "shed",
+            "granularity": granularity,
+            "featureset": featureset,
+            "created_at": now_iso(),
+        }
+
+    # Optional status store initialization and initial status
+    _st = _get_status_store()
+    _now = _now_epoch()
+    _ttl = float(_ttl_days()) * 86400.0
+    _created = _now
+    try:
+        if _st is not None:
+            existing = _st.get_status(trace_id)  # type: ignore
+            if isinstance(existing, dict) and "created_at" in existing:
+                try:
+                    _created = float(existing.get("created_at") or _now)
+                except Exception:
+                    _created = _now
+            _st.put_status({  # type: ignore
+                "trace_id": trace_id,
+                "state": "running",
+                "progress": 0.0,
+                "stage": "fetch",
+                "granularity": granularity,
+                "featureset": featureset,
+                "created_at": _created,
+                "updated_at": _now,
+                "expires_at": _created + _ttl,
+            })
+            try:
+                emit_audit_worker("trace.running", tenant_id=tenant_id, trace_id=trace_id, status="running", extra={"granularity": granularity, "featureset": featureset})
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Build meta for persistence key layout
+    store_meta = {
+        "granularity": granularity,
+        "sae_dictionary": featureset,
+        "model_hash": model_hash,
+    }
+    # Optional status store initialization and initial status
+    _st = _get_status_store()
+    _now = _now_epoch()
+    _ttl = float(_ttl_days()) * 86400.0
+    _created = _now
+    try:
+        if _st is not None:
+            existing = _st.get_status(trace_id)  # type: ignore
+            if isinstance(existing, dict) and "created_at" in existing:
+                try:
+                    _created = float(existing.get("created_at") or _now)
+                except Exception:
+                    _created = _now
+            _st.put_status({  # type: ignore
+                "trace_id": trace_id,
+                "state": "running",
+                "progress": 0.0,
+                "stage": "fetch",
+                "granularity": granularity,
+                "featureset": featureset,
+                "created_at": _created,
+                "updated_at": _now,
+                "expires_at": _created + _ttl,
+            })
+    except Exception:
+        pass
+
+    # Build meta for persistence key layout
+    store_meta = {
+        "granularity": granularity,
+        "sae_dictionary": featureset,
+        "model_hash": model_hash,
+    }
 
     # 1) Fetch activations
     activations = await fetch_activation_shards_stub(trace_id)
+    try:
+        if _st is not None:
+            _st.update_fields(trace_id, state="running", stage="decode", progress=25.0)  # type: ignore
+    except Exception:
+        pass
+    try:
+        if _st is not None:
+            _st.update_fields(trace_id, state="running", stage="decode", progress=25.0)  # type: ignore
+    except Exception:
+        pass
 
     # 2) SAE decode
     feats = await sae_decode_stub(activations, featureset)
+    try:
+        if _st is not None:
+            _st.update_fields(trace_id, state="running", stage="attribution", progress=60.0)  # type: ignore
+    except Exception:
+        pass
 
-    # 3) Attribution
-    nodes, edges = await attribution_stub(feats, granularity)
+    # 3) Attribution (budgeted, env-driven; non-breaking fallback)
+    out_text = os.getenv("DEV_OUTPUT_SENTENCE", "Paris is the capital of France.")
+    toks = [t for t in out_text.strip().split() if t]
+
+    # Determine token index/window and target output node id
+    if granularity == "token":
+        tok_idx = max(0, len(toks) - 1) if toks else 0  # last token
+        out_id = f"token_out_{tok_idx+1}"
+        window_tag = f"tok-{tok_idx}"
+    else:
+        tok_idx = 0
+        out_id = "token_out_1"
+        window_tag = "sent-1"
+
+    # Build nodes (features + single output token node for this window)
+    out_token = {"id": out_id, "type": "output_token", "label": out_text, "position": tok_idx + 1}
+    nodes = [{"id": fid, "type": "sae_feature"} for fid in feats.keys()] + [out_token]
+
+    def _activation_fallback_edges(feat_map: Dict[str, float], target_id: str, cap: int, min_w: float, window: str) -> list[dict]:
+        # Normalize activations to [0,1] and cap/prune
+        vals = [float(v) for v in feat_map.values()] or [1.0]
+        m = max(abs(x) for x in vals) or 1.0
+        items = sorted(((fid, max(0.0, float(v) / m)) for fid, v in feat_map.items()), key=lambda kv: kv[1], reverse=True)
+        edges: list[dict] = []
+        for i, (fid, w) in enumerate(items, start=1):
+            if w < float(min_w):
+                continue
+            edges.append(
+                {
+                    "id": f"att_fallback_{i}",
+                    "node_ids": [fid, target_id],
+                    "weight": float(min(1.0, w)),
+                    "metadata": {"type": "causal_circuit", "method": "fallback", "window": window},
+                }
+            )
+            if len(edges) >= int(cap):
+                break
+        return edges
+
+    # Env-driven attribution config
+    method_sent = (os.getenv("ATTR_METHOD_SENTENCE", "acdc") or "acdc").lower()
+    method_tok = (os.getenv("ATTR_METHOD_TOKEN", "shapley") or "shapley").lower()
+    sent_budget = _env_int("ATTR_SENTENCE_BUDGET_MS", "900", minimum=0)
+    tok_budget = _env_int("ATTR_TOKEN_BUDGET_MS", "3500", minimum=0)
+    max_samples = _env_int("ATTR_MAX_SAMPLES", "512", minimum=1)
+    early_delta = _env_float("ATTR_EARLY_STOP_DELTA", "0.01", minimum=0.0)
+    cap_edges = _env_int("ATTR_PER_TOKEN_CAP", "256", minimum=1)
+    min_edge_w = _env_float("ATTR_MIN_EDGE_WEIGHT", "0.01", minimum=0.0)
+    seed_env = os.getenv("ATTR_RANDOM_SEED")
+    seed_val = int(seed_env) if isinstance(seed_env, str) and seed_env.strip().lstrip("-").isdigit() else None
+
+    edges: list[dict] = []
+    try:
+        # Chaos: fail-attribution -> optionally force fallback or hard fail
+        try:
+            _flags = _read_chaos_flags()
+            _fail = _chaos_flag(_flags, "fail-attribution")
+            if _fail.get("enabled", True) and _chaos_hit(_fail.get("percent", 0)):
+                if str(_fail.get("mode", "fallback")).lower() in ("fail", "hard"):
+                    try:
+                        if _st is not None:
+                            _st.update_fields(trace_id, state="failed", error="chaos_fail_attribution")  # type: ignore
+                    except Exception:
+                        pass
+                    raise RuntimeError("chaos_fail_attribution_hard")
+                else:
+                    # soft mode: raise to hit fallback block below
+                    raise RuntimeError("chaos_fail_attribution")
+        except RuntimeError:
+            # propagate intentional chaos failures
+            raise
+        except Exception:
+            # ignore control read issues
+            pass
+
+        if granularity == "sentence":
+            if sentence_attribution is None or AttributionConfig is None:
+                raise RuntimeError("attribution module unavailable")
+            cfg = AttributionConfig(
+                method="acdc" if method_sent in ("acdc", "auto") else method_sent,
+                max_samples=max_samples,
+                early_stop_delta=early_delta,
+                max_ms_budget=sent_budget or 900,
+                random_seed=seed_val,
+                min_edge_weight=min_edge_w,
+                per_token_incident_cap=cap_edges,
+            )
+            edges = sentence_attribution(feats, toks, cfg)
+        else:
+            if token_attribution is None or AttributionConfig is None:
+                raise RuntimeError("attribution module unavailable")
+            cfg = AttributionConfig(
+                method="shapley" if method_tok in ("shapley", "auto") else method_tok,
+                max_samples=max_samples,
+                early_stop_delta=early_delta,
+                max_ms_budget=tok_budget or 3500,
+                random_seed=seed_val,
+                min_edge_weight=min_edge_w,
+                per_token_incident_cap=cap_edges,
+            )
+            edges = token_attribution(feats, tok_idx, toks, cfg)
+    except Exception:
+        # Keep existing fallback behavior on exceptions or budget exhaustion
+        edges = _activation_fallback_edges(feats, out_id, cap_edges, min_edge_w, window_tag)
 
     # 4) Augment nodes with labels/attrs
     for n in nodes:
@@ -2273,18 +3037,91 @@ async def process_envelope(envelope: Dict[str, Any], store: S3Store) -> Dict[str
             # Placeholder feature label
             n["label"] = f"Feature {n['id'].split('_')[-1]}"
 
-    # 5) Prune
-    pn, pe = prune_graph_stub(nodes, edges, min_w=0.01)
+    # 5) Prune and group (standardized)
+    logger = logging.getLogger("explainer.worker")
+    cfg_hg = None
+    try:
+        if HGConfig is not None:
+            cfg_hg = HGConfig(
+                min_edge_weight=_env_float("HG_MIN_EDGE_WEIGHT", "0.01", minimum=0.0),
+                per_token_incident_cap=_env_int("HG_PER_TOKEN_CAP", "256", minimum=1),
+                max_nodes=_env_int("HG_MAX_NODES", "5000", minimum=1),
+                max_incidences=_env_int("HG_MAX_INCIDENCES", "20000", minimum=1),
+                grouping=(os.getenv("HG_GROUPING", "supernode") or "supernode").lower(),
+                supernode_min_group=_env_int("HG_SUPERNODE_MIN_GROUP", "3", minimum=2),
+                supernode_label_delim=os.getenv("HG_LABEL_DELIM", ":") or ":",
+            )
+    except Exception as e:
+        logger.warning(f"HypergraphConfig init failed; falling back to stub: {e}")
+        cfg_hg = None
 
-    # 6) Assemble HIF
-    hif = build_hif(
-        model_name=model_name,
-        model_hash=model_hash,
-        sae_dictionary=featureset,
-        granularity=granularity,
-        nodes=pn,
-        incidences=pe,
-    )
+    grouping_meta = {"supernodes": {}}
+    try:
+        if hg_prune_and_group is not None and cfg_hg is not None:
+            pn, pe, grouping_meta = hg_prune_and_group(nodes, edges, cfg_hg)
+        else:
+            pn, pe = prune_graph_stub(
+                nodes,
+                edges,
+                min_w=_env_float("HG_MIN_EDGE_WEIGHT", "0.01", minimum=0.0),
+                max_nodes=_env_int("HG_MAX_NODES", "5000", minimum=1),
+                max_edges=_env_int("HG_MAX_INCIDENCES", "20000", minimum=1),
+            )
+    except Exception as e:
+        logger.warning(f"prune_and_group failed; using stub pruning: {e}")
+        pn, pe = prune_graph_stub(
+            nodes,
+            edges,
+            min_w=_env_float("HG_MIN_EDGE_WEIGHT", "0.01", minimum=0.0),
+            max_nodes=_env_int("HG_MAX_NODES", "5000", minimum=1),
+            max_edges=_env_int("HG_MAX_INCIDENCES", "20000", minimum=1),
+        )
+
+    # 6) Assemble HIF (legacy v1)
+    meta = {
+        "model_name": model_name,
+        "model_hash": model_hash,
+        "sae_dictionary": featureset,
+        "granularity": granularity,
+    }
+    try:
+        if hg_build_hif is not None and cfg_hg is not None:
+            hif = hg_build_hif(pn, pe, meta, cfg_hg)
+            # Optional validation hook
+            try:
+                if hg_validate_hif is not None:
+                    hg_validate_hif(hif)
+            except Exception as ve:
+                logger.info(f"HIF validation skipped/failed: {ve}")
+        else:
+            # Fallback to legacy constructor
+            hif = build_hif(
+                model_name=model_name,
+                model_hash=model_hash,
+                sae_dictionary=featureset,
+                granularity=granularity,
+                nodes=pn,
+                incidences=pe,
+            )
+    except Exception as e:
+        # Final safety net - fallback to minimal legacy constructor on any error
+        logger.warning(f"build_hif failed; using fallback legacy constructor: {e}")
+        hif = build_hif(
+            model_name=model_name,
+            model_hash=model_hash,
+            sae_dictionary=featureset,
+            granularity=granularity,
+            nodes=pn,
+            incidences=pe,
+        )
+
+    # Emit grouping summary in logs (schema-compliant HIF omits this)
+    try:
+        supernode_count = sum(1 for n in hif.get("nodes", []) if n.get("type") == "circuit_supernode")
+        collapsed_features = sum(len(v) for v in (grouping_meta.get("supernodes", {}) or {}).values())
+        logger.info(f"grouping_summary: supernodes={supernode_count} collapsed_features={collapsed_features}")
+    except Exception:
+        pass
 
     # 7) Persist
     artifact_uri = store.put_json_gz(trace_id, hif)

@@ -1,0 +1,24 @@
+{
+  "sentence": {
+    "p50": 0.20,
+    "p95": 0.80,
+    "notes": "Sample sentence path timings (seconds) on 1 GPU"
+  },
+  "token": {
+    "p50": 2.0,
+    "p95": 5.0,
+    "notes": "Sample token path timings (seconds) on 1 GPU"
+  },
+  "queue": {
+    "observed_backlog_seconds": { "mean": 0.4, "p95": 1.2 }
+  },
+  "kafka": {
+    "enabled": false,
+    "partitions": 12,
+    "notes": "Enable if using MSK; set real partition count"
+  },
+  "metadata": {
+    "captured_at": "sample",
+    "environment": "staging"
+  }
+}

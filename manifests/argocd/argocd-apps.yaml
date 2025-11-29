@@ -1,0 +1,87 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hypergraph
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yourorg/yourrepo.git   # REPLACE
+    targetRevision: main
+    path: manifests/helm/hypergraph
+    helm:
+      values: |
+        global:
+          appVersion: "0.1.0"
+          otel:
+            enabled: true
+            otlpEndpoint: "http://otel-collector.otel.svc.cluster.local:4317"
+        gateway:
+          image: "yourrepo/hypergraph-gateway:1.0.0"
+          replicas: 3
+        explainer:
+          image: "yourrepo/hypergraph-explainer:1.0.0"
+          replicas: 2
+          keda:
+            enabled: true
+            minReplicaCount: 2
+            maxReplicaCount: 16
+            backlogSecondsTarget: 1.0
+        interceptor:
+          image: "yourrepo/hypergraph-interceptor:1.0.0"
+          replicas: 2
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hypergraph
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# Optional: separate Application for otel-collector (if managing here)
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: otel-collector
+#   namespace: argocd
+#   annotations:
+#     argocd.argoproj.io/sync-wave: "5"
+# spec:
+#   project: default
+#   source:
+#     repoURL: https://github.com/yourorg/yourrepo.git
+#     targetRevision: main
+#     path: manifests/otel
+#   destination:
+#     server: https://kubernetes.default.svc
+#     namespace: otel
+#   syncPolicy:
+#     automated:
+#       prune: true
+#       selfHeal: true
+#     syncOptions:
+#       - CreateNamespace=true
+#
+# Optional: Karpenter application
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: karpenter
+#   namespace: argocd
+# spec:
+#   project: default
+#   source:
+#     repoURL: https://github.com/yourorg/yourrepo.git
+#     targetRevision: main
+#     path: manifests/karpenter
+#   destination:
+#     server: https://kubernetes.default.svc
+#     namespace: karpenter
+#   syncPolicy:
+#     automated:
+#       prune: true
+#       selfHeal: true

@@ -29,3 +29,31 @@ Audience: Both
   - `docker exec -it redis redis-cli XINFO STREAM your_stream_name`
 - Postgres:
   - `docker exec -it postgres psql -U postgres -d hypergraph -c '\dt'`
+
+## RBAC 401/403
+- 401 Unauthorized: missing/invalid Authorization header under AUTH_MODE=static. The server returns `{"code":"unauthorized"}`; add a valid token to Authorization: Bearer.
+- 403 Forbidden: token known but missing required scopes (e.g., POST write without traces:write). Detail payload includes `{"code":"missing_scope"}`. See [rbac.py](services/gateway/src/rbac.py:62).
+
+## Rate limit 429
+- Per-tenant token bucket. Respect Retry-After header (integer seconds). Tune defaults with RATE_LIMIT_* envs; see [rate_limit.py](services/gateway/src/rate_limit.py:180).
+
+## SSE timeouts (GET /v1/traces/{id}/stream)
+- Ensure client keeps the connection open and accepts text/event-stream. If idle, server emits only state transitions (no keepalives).
+
+## CORS issues (browser)
+- Use a dev proxy (Vite) or enable development CORS middleware near [app = FastAPI(...)](services/gateway/src/app.py:333). Restrict origins in production.
+
+## KEDA not scaling
+- Verify ScaledObject present and Active: `kubectl -n <ns> get scaledobject`.
+- Confirm metrics source reachable and query valid in [keda-scalers.yaml](manifests/helm/hypergraph/templates/keda-scalers.yaml:1).
+- Check Prometheus target and label filters; adjust `.Values.explainer.keda.backlogSecondsTarget` and min/max replicas.
+
+## S3 access denied (SSE-KMS)
+- Ensure bucket policy enforces and permits SSE-KMS with the configured key; see [iam-policies.md](docs/security/iam-policies.md:1).
+- Confirm role permissions include kms:Encrypt/Decrypt and S3 PutObject/GetObject.
+
+## StatusStore errors
+- STATUS_BACKEND=json requires write access to STATUS_JSON_PATH (default `/tmp/hif/status.json`). JSONPath errors often indicate a truncated file; delete and let it be recreated. See [LocalJSONStatusStore](services/explainer/src/status_store.py:52).
+
+## Chaos flags file effects
+- Chaos is toggled via `/tmp/hif/chaos.json` by the test harness; flags may degrade performance (e.g., slow-sae, drop-s3). See [load_stress_chaos.md](docs/testing/load_stress_chaos.md:1).

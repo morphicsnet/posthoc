@@ -53,6 +53,39 @@ except Exception:  # pragma: no cover - optional
 
 logger = logging.getLogger(__name__)
 
+# Optional: capture pipeline + utils for dev simulation and future hook integration
+try:
+    # Absolute import when running from repo root
+    from services.interceptor.src.hooks import CaptureConfig, CapturePipeline, register_layer_hook, RedisClientStub  # type: ignore  # pylint: disable=import-error
+except Exception:
+    try:
+        # Relative import when packaged
+        from .hooks import CaptureConfig, CapturePipeline, register_layer_hook, RedisClientStub  # type: ignore  # pylint: disable=import-error
+    except Exception:
+        try:
+            # Local import when running the single file
+            from hooks import CaptureConfig, CapturePipeline, register_layer_hook, RedisClientStub  # type: ignore  # pylint: disable=import-error
+        except Exception:
+            CaptureConfig = None  # type: ignore
+            CapturePipeline = None  # type: ignore
+            register_layer_hook = None  # type: ignore
+            RedisClientStub = None  # type: ignore
+
+try:
+    from services.interceptor.src.utils import now_ns, ns_to_ms  # type: ignore  # pylint: disable=import-error
+except Exception:
+    try:
+        from .utils import now_ns, ns_to_ms  # type: ignore  # pylint: disable=import-error
+    except Exception:
+        try:
+            from utils import now_ns, ns_to_ms  # type: ignore  # pylint: disable=import-error
+        except Exception:
+            def now_ns() -> int:  # type: ignore
+                import time as _t
+                return int(_t.perf_counter_ns())
+            def ns_to_ms(ns: int) -> float:  # type: ignore
+                return ns / 1e6
+
 # Configuration centralized below in Config class
 
 def _parse_int(val: Optional[str]) -> Optional[int]:
@@ -178,6 +211,44 @@ class RedisStreamEnqueuer:
         raise RuntimeError("No Redis client available. Install 'redis' package.")
 
 ENQUEUER = RedisStreamEnqueuer(CONFIG.REDIS_URL, CONFIG.REDIS_STREAM, CONFIG.REDIS_MAXLEN)
+
+# Dev-only helper: simulate a token-by-token capture using the new pipeline
+def _simulate_capture_trace(trace_id: str = "dev-trace", tokens: int = 8, dim: int = 64, topk: int = 8) -> dict:
+    """
+    Simulates per-token capture using CapturePipeline and returns an envelope
+    with shard keys and metadata. This is not invoked by default server paths.
+    """
+    if CapturePipeline is None or CaptureConfig is None:
+        logger.debug("CapturePipeline unavailable; skipping simulation")
+        return {}
+    import os as _os, random as _rand
+    cfg = CaptureConfig(
+        model_name=_os.getenv("DEV_MODEL_NAME", "dev-model"),
+        model_hash=_os.getenv("DEV_MODEL_HASH", "dev-hash"),
+        topk=int(topk),
+        window_size=int(_os.getenv("DEV_WINDOW_SIZE", "16")),
+        compress=_os.getenv("DEV_COMPRESS", "json"),
+        namespace=_os.getenv("DEV_NAMESPACE", "activations"),
+    )
+    pipe = CapturePipeline(cfg)
+    pipe.start_trace(trace_id, params={"dim": dim, "tokens": tokens})
+    hook = register_layer_hook(pipe, trace_id) if register_layer_hook is not None else None
+
+    start_ns = now_ns()
+    for t in range(tokens):
+        # sparse ~5% non-zeros synthetic activation vector
+        v = [0.0] * int(dim)
+        nnz = max(1, int(dim * 0.05))
+        for _ in range(nnz):
+            idx = _rand.randrange(dim)
+            v[idx] = _rand.random() * 2 - 1
+        if hook:
+            hook(t, v)
+        else:
+            pipe.capture_token(trace_id, t, v)
+    env = pipe.flush(trace_id)
+    env["capture_ms_total"] = ns_to_ms(now_ns() - start_ns)
+    return env
 
 def _validate_payload(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):

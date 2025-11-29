@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hypergraph.fullname" . }}-env
+  labels:
+    app.kubernetes.io/name: {{ include "hypergraph.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  AUTH_MODE: {{ .Values.global.rbacAuthMode | quote }}
+  # May be plaintext JSON or base64-encoded JSON. Services should auto-detect base64 and decode.
+  AUTH_TOKENS_JSON: {{ .Values.global.rbacTokensJson | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.global.otel.otlpEndpoint | quote }}
+  ENABLE_OTEL: {{ ternary "true" "false" .Values.global.otel.enabled | quote }}
+  STATUS_BACKEND: {{ .Values.global.statusBackend | quote }}
+  TRACE_TTL_DAYS: {{ printf "%d" .Values.global.traceTtlDays | quote }}
+  RATE_LIMIT_READ_RPS: {{ printf "%d" .Values.global.rateLimits.readRps | quote }}
+  RATE_LIMIT_READ_BURST: {{ printf "%d" .Values.global.rateLimits.readBurst | quote }}
+  RATE_LIMIT_WRITE_RPS: {{ printf "%d" .Values.global.rateLimits.writeRps | quote }}
+  RATE_LIMIT_WRITE_BURST: {{ printf "%d" .Values.global.rateLimits.writeBurst | quote }}
+  S3_ENABLED: {{ ternary "true" "false" .Values.global.s3.enabled | quote }}
+  S3_BUCKET: {{ .Values.global.s3.bucket | quote }}
+  S3_PREFIX: {{ .Values.global.s3.prefix | quote }}
+  S3_KMS_KEY_ID: {{ .Values.global.s3.kmsKeyId | quote }}
+---
+# Helper template definitions for fullname/name
+{{- define "hypergraph.name" -}}
+hypergraph
+{{- end -}}
+{{- define "hypergraph.fullname" -}}
+{{- printf "%s-%s" .Release.Name (include "hypergraph.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}

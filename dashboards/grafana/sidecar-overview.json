@@ -1,0 +1,240 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "type": "row",
+      "title": "Gateway",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway RPS by endpoint",
+      "description": "sum(rate(http_requests_total[1m])) by (path, method)",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[1m])) by (path, method)",
+          "legendFormat": "{{path}} {{method}}",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway p95 latency by endpoint",
+      "description": "histogram_quantile(0.95, sum by (le, path, method)(rate(http_request_duration_seconds_bucket[5m])))",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, path, method) (rate(http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{path}} {{method}} p95",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway p50 latency by endpoint",
+      "description": "histogram_quantile(0.50, sum by (le, path, method)(rate(http_request_duration_seconds_bucket[5m])))",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, path, method) (rate(http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{path}} {{method}} p50",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 9 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway 4xx / 5xx rate",
+      "description": "4xx: sum(rate(http_requests_total{status=~\"4..\"}[5m]))  5xx: sum(rate(http_requests_total{status=~\"5..\"}[5m]))",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"4..\"}[5m]))",
+          "legendFormat": "4xx",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        },
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m]))",
+          "legendFormat": "5xx",
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 9 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate-limit rejections by category",
+      "targets": [
+        {
+          "expr": "sum(rate(rate_limit_rejections_total[5m])) by (category)",
+          "legendFormat": "{{category}}",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 15 }
+    },
+    {
+      "type": "timeseries",
+      "title": "RBAC denials",
+      "targets": [
+        {
+          "expr": "sum(rate(rbac_denied_total[5m]))",
+          "legendFormat": "rbac_denied_total",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 15 }
+    },
+    {
+      "type": "row",
+      "title": "Explainer",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Explainer jobs/sec by state/granularity",
+      "targets": [
+        {
+          "expr": "sum(rate(explainer_jobs_total[1m])) by (state, granularity)",
+          "legendFormat": "{{state}} {{granularity}}",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 22 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Stage durations (p95)",
+      "description": "histogram_quantile(0.95, sum by (le, stage)(rate(explainer_stage_duration_seconds_bucket[5m])))",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(explainer_stage_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{stage}} p95",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 22 }
+    },
+    {
+      "type": "timeseries",
+      "title": "SAE decode latency (p95) by device/layer",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, device, layer)(rate(sae_decode_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{device}} L{{layer}} p95",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 29 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Attribution latency (p95) by method/granularity",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, method, granularity)(rate(attribution_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{method}} {{granularity}} p95",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 29 }
+    },
+    {
+      "type": "stat",
+      "title": "HIF sizes (current)",
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "expr": "hif_nodes_count",
+          "legendFormat": "nodes",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        },
+        {
+          "expr": "hif_incidences_count",
+          "legendFormat": "incidences",
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 36 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue lag (P95)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(explainer_queue_lag_seconds_bucket[5m]))",
+          "legendFormat": "lag p95",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 36 }
+    },
+    {
+      "type": "row",
+      "title": "Error budget",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 42 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway burn-rate (5m window, SLO=99%)",
+      "description": "Approx burn rate = error_rate / error_budget. Here error_rate = 5xx / all, error_budget = 1 - 0.99 = 0.01",
+      "targets": [
+        {
+          "expr": "(sum(increase(http_requests_total{status=~\"5..\"}[5m])) / sum(increase(http_requests_total[5m]))) / 0.01",
+          "legendFormat": "5m burn rate",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 43 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Explainer burn-rate (5m, SLO=99%)",
+      "description": "Approx burn rate = (failed jobs / all jobs) / 0.01",
+      "targets": [
+        {
+          "expr": "(sum(increase(explainer_jobs_total{state=\"failed\"}[5m])) / sum(increase(explainer_jobs_total[5m]))) / 0.01",
+          "legendFormat": "5m burn rate",
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "PROM_DS" }
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 43 }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": ["sidecar", "gateway", "explainer", "observability"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Sidecar Overview",
+  "version": 1
+}

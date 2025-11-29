@@ -1,5 +1,7 @@
-from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Response, Request
+from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Response, Request, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.exception_handlers import http_exception_handler
+from fastapi import status
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import time, uuid, asyncio, os, json, logging
@@ -30,6 +32,69 @@ except Exception:
     pass
 
 logger = logging.getLogger(__name__)
+# Observability (optional): import setup_otel and JSON logger helper
+try:
+    from services.gateway.src.otel import setup_otel as _setup_otel, get_logger as _otel_get_logger  # type: ignore
+except Exception:
+    try:
+        from otel import setup_otel as _setup_otel, get_logger as _otel_get_logger  # type: ignore
+    except Exception:
+        _setup_otel = None  # type: ignore
+
+        def _otel_get_logger(name: str = "gateway"):
+            return logging.getLogger(name)
+
+# RBAC and rate limiting dependencies
+try:
+    from services.gateway.src.rbac import AuthContext, rbac_dependency  # type: ignore
+except Exception:
+    try:
+        from rbac import AuthContext, rbac_dependency  # type: ignore
+    except Exception:
+        AuthContext = None  # type: ignore
+
+        def rbac_dependency(required_scopes):  # type: ignore
+            async def _dep(request: Request):
+                class _Anon:
+                    tenant_id = "anon"
+                    scopes = set()
+                    subject = "anonymous"
+                try:
+                    request.state.auth_ctx = _Anon()
+                except Exception:
+                    pass
+                return request.state.auth_ctx
+            return _dep
+
+try:
+    from services.gateway.src.rate_limit import rate_limit_dependency  # type: ignore
+except Exception:
+    try:
+        from rate_limit import rate_limit_dependency  # type: ignore
+    except Exception:
+        def rate_limit_dependency(category: str):  # type: ignore
+            async def _noop_dep(request: Request):
+                return None
+            return _noop_dep
+
+# Optional status store (shared abstraction from explainer)
+try:
+    from services.explainer.src.status_store import (  # type: ignore
+        get_status_store_from_env,
+        StatusStore as _StatusStore,
+        TraceStatusItem as _TraceStatusItem,
+    )
+except Exception:
+    try:
+        from status_store import (  # type: ignore
+            get_status_store_from_env,
+            StatusStore as _StatusStore,
+            TraceStatusItem as _TraceStatusItem,
+        )
+    except Exception:
+        get_status_store_from_env = None  # type: ignore
+        _StatusStore = None  # type: ignore
+        _TraceStatusItem = dict  # type: ignore
 
 class Config:
     def __init__(self) -> None:
@@ -87,6 +152,31 @@ class Config:
             return str(self.safe_dict())
 
 CONFIG = Config()
+
+# Status backend helpers
+_STATUS_STORE: Optional[_StatusStore] = None
+
+def _status_backend_enabled() -> bool:
+    b = (os.getenv("STATUS_BACKEND", "") or "").strip().lower()
+    return b in ("json", "ddb")
+
+def _get_status_store() -> Optional[_StatusStore]:
+    global _STATUS_STORE
+    if not _status_backend_enabled() or get_status_store_from_env is None:
+        return None
+    if _STATUS_STORE is None:
+        try:
+            _STATUS_STORE = get_status_store_from_env()  # type: ignore
+        except Exception:
+            _STATUS_STORE = None
+    return _STATUS_STORE
+
+def _ttl_days() -> int:
+    try:
+        d = int(os.getenv("TRACE_TTL_DAYS", "7"))
+        return d if d > 0 else 7
+    except Exception:
+        return 7
 
 _redis = None
 
@@ -241,6 +331,87 @@ class HIFGraph(BaseModel):
 
 
 app = FastAPI(title="Hypergraph Gateway")
+
+# --- Security Audit Logger and PII scrubbing (see docs/security/SECURITY.md) ---
+try:
+    from libs.sanitize.pii import sanitize_message as _sanitize_message  # type: ignore
+except Exception:
+    def _sanitize_message(text: str) -> str:  # fallback no-op
+        try:
+            return text if isinstance(text, str) else str(text)
+        except Exception:
+            return ""
+
+_AUDIT_ENABLED = (os.getenv("AUDIT_LOG_ENABLE", "0") or "0") == "1"
+_AUDIT_PATH = os.getenv("AUDIT_LOG_PATH", "/var/log/hypergraph/audit.log")
+_AUDIT_FH = None  # type: ignore
+_AUDIT_USING_STDOUT = False
+
+def _audit_init() -> None:
+    global _AUDIT_FH, _AUDIT_USING_STDOUT
+    if not _AUDIT_ENABLED:
+        return
+    try:
+        d = os.path.dirname(_AUDIT_PATH) or "."
+        os.makedirs(d, exist_ok=True)
+        _AUDIT_FH = open(_AUDIT_PATH, "a", encoding="utf-8")
+    except Exception:
+        _AUDIT_FH = None
+        _AUDIT_USING_STDOUT = True
+
+def emit_audit(
+    event: str,
+    request: Request,
+    tenant_id: str,
+    trace_id: Optional[str] = None,
+    subject: Optional[str] = None,
+    scopes: Optional[List[str]] = None,
+    status: Optional[int] = None,
+    reason: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    if not _AUDIT_ENABLED:
+        return
+    try:
+        payload = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "service": "gateway",
+            "event": event,
+            "tenant_id": str(tenant_id or "anon"),
+            "trace_id": trace_id,
+            "subject": subject,
+            "scopes": sorted(list(scopes or [])),
+            "path": str(getattr(request.url, "path", "")),
+            "method": str(getattr(request, "method", "")),
+            "status": int(status) if status is not None else None,
+        }
+        if reason:
+            payload["reason"] = str(reason)
+        if isinstance(extra, dict) and extra:
+            # Keep cardinality low; attach small scalar fields only
+            for k, v in list(extra.items())[:8]:
+                if isinstance(v, (str, int, float, bool)) or v is None:
+                    payload[k] = v if (k not in ("authorization", "Authorization")) else None
+        line = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        if _AUDIT_FH is not None:
+            _AUDIT_FH.write(line + "\n")
+            _AUDIT_FH.flush()
+        else:
+            print(line)
+    except Exception:
+        pass
+
+# initialize audit sink on import
+try:
+    _audit_init()
+except Exception:
+    pass
+# Initialize observability (metrics, tracing, JSON logs) if enabled
+try:
+    if os.getenv("ENABLE_OTEL", "0") == "1" and _setup_otel is not None:
+        _setup_otel(app, service_name="gateway")
+except Exception:
+    pass
 try:
     logger.info("config: %s", CONFIG.safe_repr())
 except Exception:
@@ -377,6 +548,8 @@ async def create_chat_completion(
     x_trace_id: Optional[str] = Header(default=None, alias="x-trace-id"),
     x_idempotency_key: Optional[str] = Header(default=None, alias="x-idempotency-key"),
     x_provider: Optional[str] = Header(default=None, alias="x-provider"),
+    auth: Any = Depends(rbac_dependency(["traces:write"])),
+    _rl: None = Depends(rate_limit_dependency("write")),
 ):
     # Optional explainer simulation (preserved behavior)
     if x_explain_mode == "hypergraph":
@@ -391,6 +564,42 @@ async def create_chat_completion(
             granularity=granularity,
             featureset=featureset,
         )
+        # Optionally persist initial status to shared store
+        try:
+            store = _get_status_store()
+            if store is not None:
+                now = time.time()
+                ttl = float(_ttl_days()) * 86400.0
+                item: Dict[str, Any] = {
+                    "trace_id": trace_id,
+                    "tenant_id": getattr(auth, "tenant_id", "anon"),
+                    "state": "queued",
+                    "progress": 0.0,
+                    "stage": "queued",
+                    "granularity": granularity,
+                    "featureset": featureset,
+                    "created_at": now,
+                    "updated_at": now,
+                    "expires_at": now + ttl,
+                }
+                store.put_status(item)  # type: ignore
+        except Exception:
+            pass
+        # audit queued state (low-cardinality, scrubbed)
+        try:
+            emit_audit(
+                event="trace.queued",
+                request=request,
+                tenant_id=getattr(auth, "tenant_id", "anon"),
+                trace_id=trace_id,
+                subject=getattr(auth, "subject", None),
+                scopes=sorted(list(getattr(auth, "scopes", set()))),
+                status=None,
+                reason=None,
+                extra={"granularity": granularity, "featureset": featureset},
+            )
+        except Exception:
+            pass
         # schedule async simulation without blocking proxy behavior
         asyncio.create_task(simulate_explanation(trace_id, granularity, featureset))
 
@@ -402,7 +611,34 @@ async def create_chat_completion(
         body: Dict[str, Any] = await request.json()
     except Exception:
         return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
-
+ 
+    # Audit: user submission when explain mode is enabled (PII-scrubbed, snippet only)
+    try:
+        if _AUDIT_ENABLED and x_explain_mode:
+            snippet = ""
+            try:
+                for m in (body.get("messages") or []):
+                    if isinstance(m, dict) and (m.get("role") or "").lower() == "user":
+                        c = m.get("content")
+                        if isinstance(c, str) and c:
+                            snippet = _sanitize_message(c)[:64]
+                            break
+            except Exception:
+                snippet = ""
+            emit_audit(
+                event="chat.submit",
+                request=request,
+                tenant_id=getattr(auth, "tenant_id", "anon"),
+                trace_id=x_trace_id or None,
+                subject=getattr(auth, "subject", None),
+                scopes=sorted(list(getattr(auth, "scopes", set()))),
+                status=None,
+                reason=None,
+                extra={"mode": x_explain_mode, "model": body.get("model"), "snippet": snippet},
+            )
+    except Exception:
+        pass
+ 
     upstream_url = f"{CONFIG.LLM_PROXY_URL.rstrip('/')}/v1/chat/completions"
     headers_out = passthrough_headers(dict(request.headers))
     stream = bool(body.get("stream", False))
@@ -648,7 +884,35 @@ async def create_chat_completion(
 
 
 @app.get("/v1/traces/{trace_id}/status", response_model=TraceStatus)
-async def get_trace_status(trace_id: str):
+async def get_trace_status(
+    trace_id: str,
+    auth: Any = Depends(rbac_dependency(["traces:read"])),
+    _rl: None = Depends(rate_limit_dependency("read")),
+):
+    # Prefer shared status store if configured
+    try:
+        store = _get_status_store()
+    except Exception:
+        store = None
+    if store is not None:
+        try:
+            item = store.get_status(trace_id)  # type: ignore
+        except Exception:
+            item = None
+        if isinstance(item, dict):
+            # Map to response model
+            return TraceStatus(
+                trace_id=str(item.get("trace_id") or trace_id),
+                state=str(item.get("state") or "unknown"),
+                progress=float(item.get("progress") or 0.0),
+                stage=item.get("stage"),
+                updated_at=float(item.get("updated_at") or time.time()),
+                s3_key=item.get("s3_key"),
+                error=item.get("error"),
+                granularity=item.get("granularity"),
+                featureset=item.get("featureset"),
+            )
+    # Fallback to in-memory legacy behavior
     st = TRACE_STATUS.get(trace_id)
     if not st:
         raise HTTPException(status_code=404, detail="Trace not found")
@@ -656,13 +920,41 @@ async def get_trace_status(trace_id: str):
 
 
 @app.get("/v1/traces/{trace_id}/graph")
-async def get_trace_graph(trace_id: str):
-    if trace_id not in TRACE_STATUS:
+async def get_trace_graph(
+    trace_id: str,
+    auth: Any = Depends(rbac_dependency(["traces:read"])),
+    _rl: None = Depends(rate_limit_dependency("read")),
+):
+    # Prefer shared status store to validate existence/expiry
+    item: Optional[Dict[str, Any]] = None
+    try:
+        store = _get_status_store()
+        if store is not None:
+            try:
+                item = store.get_status(trace_id)  # type: ignore
+            except Exception:
+                item = None
+    except Exception:
+        item = None
+
+    if trace_id not in TRACE_STATUS and item is None:
         raise HTTPException(status_code=404, detail="Trace not found")
-    graph = TRACE_GRAPH.get(trace_id)
-    st = TRACE_STATUS[trace_id]
-    if st.state == "expired":
+
+    # Expiry check (only applicable when STATUS_BACKEND in use)
+    try:
+        if item is not None:
+            now = time.time()
+            exp = float(item.get("expires_at") or 0.0)  # type: ignore
+            if (item.get("state") == "expired") or (exp and exp < now):
+                raise HTTPException(status_code=410, detail="Trace expired")
+    except Exception:
+        pass
+
+    # Also handle in-memory expiry state
+    st_local = TRACE_STATUS.get(trace_id)
+    if st_local and getattr(st_local, "state", None) == "expired":
         raise HTTPException(status_code=410, detail="Trace expired")
+    graph = TRACE_GRAPH.get(trace_id)
     if not graph:
         # Not ready; return 404 to encourage polling
         raise HTTPException(status_code=404, detail="Graph not ready")
@@ -671,18 +963,52 @@ async def get_trace_graph(trace_id: str):
 
 
 @app.get("/v1/traces/{trace_id}/stream")
-async def stream_trace(trace_id: str):
+async def stream_trace(
+    trace_id: str,
+    auth: Any = Depends(rbac_dependency(["traces:read"])),
+    _rl: None = Depends(rate_limit_dependency("read")),
+):
+    # 404 if unknown trace_id (prefer StatusStore when available)
+    exists = trace_id in TRACE_STATUS
+    item: Optional[Dict[str, Any]] = None
+    try:
+        store = _get_status_store()
+        if store is not None:
+            try:
+                item = store.get_status(trace_id)  # type: ignore
+            except Exception:
+                item = None
+    except Exception:
+        item = None
+
+    if not exists and item is None:
+        raise HTTPException(status_code=404, detail="Trace not found")
+
     async def event_gen():
-        # Emit current status then complete
-        st = TRACE_STATUS.get(trace_id)
-        if not st:
-            yield "event: error\ndata: {\"error\":\"not_found\"}\n\n"
+        try:
+            if item is not None:
+                payload = {
+                    "trace_id": str(item.get("trace_id") or trace_id),
+                    "state": str(item.get("state") or "unknown"),
+                    "progress": float(item.get("progress") or 0.0),
+                    "stage": item.get("stage"),
+                    "updated_at": float(item.get("updated_at") or time.time()),
+                    "s3_key": item.get("s3_key"),
+                    "error": item.get("error"),
+                    "granularity": item.get("granularity"),
+                    "featureset": item.get("featureset"),
+                }
+                state_val = str(item.get("state") or "")
+            else:
+                st = TRACE_STATUS.get(trace_id)
+                payload = st.model_dump() if st else {"trace_id": trace_id, "state": "unknown"}
+                state_val = st.state if st else ""
+            yield "event: status_update\ndata: " + json.dumps(payload) + "\n\n"
+            if state_val == "complete" and trace_id in TRACE_GRAPH:
+                yield "event: complete\ndata: " + json.dumps({"trace_id": trace_id}) + "\n\n"
+        except Exception:
             return
-        payload = st.model_dump()
-        yield "event: status_update\ndata: " + str(payload).replace("'", '"') + "\n\n"
-        # if complete and graph present, announce complete
-        if st.state == "complete" and trace_id in TRACE_GRAPH:
-            yield "event: complete\ndata: {\"trace_id\":\"" + trace_id + "\"}\n\n"
+
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
@@ -692,23 +1018,152 @@ class WebhookRegistration(BaseModel):
     events: Optional[List[str]] = None
 
 
-@app.post("/v1/traces/{trace_id}/webhooks")
-async def register_webhook(trace_id: str, body: WebhookRegistration):
+@app.post("/v1/traces/{trace_id}/webhooks", status_code=201)
+async def register_webhook(
+    trace_id: str,
+    request: Request,
+    body: WebhookRegistration,
+    auth: Any = Depends(rbac_dependency(["traces:write"])),
+    _rl: None = Depends(rate_limit_dependency("write")),
+):
+    # Require a known trace_id (status store or in-memory)
+    exists = trace_id in TRACE_STATUS
+    if not exists:
+        try:
+            store = _get_status_store()
+            if store is not None:
+                try:
+                    exists = store.get_status(trace_id) is not None  # type: ignore
+                except Exception:
+                    exists = False
+        except Exception:
+            exists = False
+    if not exists:
+        raise HTTPException(status_code=404, detail="Trace not found")
+
     WEBHOOKS.setdefault(trace_id, []).append(body.model_dump())
+    try:
+        emit_audit(
+            event="webhook.register",
+            request=request,
+            tenant_id=getattr(auth, "tenant_id", "anon"),
+            trace_id=trace_id,
+            subject=getattr(auth, "subject", None),
+            scopes=sorted(list(getattr(auth, "scopes", set()))),
+            status=201,
+            reason=None,
+            extra={"has_secret": bool(body.secret), "events_count": len(body.events or [])},
+        )
+    except Exception:
+        pass
     return {"id": uuid.uuid4().hex[:8], "trace_id": trace_id, "url": body.url}
 
 
 @app.delete("/v1/traces/{trace_id}")
-async def cancel_trace(trace_id: str):
+async def cancel_trace(
+    trace_id: str,
+    request: Request,
+    auth: Any = Depends(rbac_dependency(["traces:write"])),
+    _rl: None = Depends(rate_limit_dependency("write")),
+):
+    # Check backing store first (if enabled)
+    store_item: Optional[Dict[str, Any]] = None
+    store = None
+    try:
+        store = _get_status_store()
+        if store is not None:
+            try:
+                store_item = store.get_status(trace_id)  # type: ignore
+            except Exception:
+                store_item = None
+    except Exception:
+        store_item = None
+
     st = TRACE_STATUS.get(trace_id)
-    if not st:
+    if not st and store_item is None:
         raise HTTPException(status_code=404, detail="Trace not found")
-    if st.state in ("complete", "expired", "failed", "canceled"):
+
+    current_state: Optional[str] = None
+    if isinstance(store_item, dict):
+        current_state = str(store_item.get("state") or "")
+    elif st:
+        current_state = st.state
+
+    if current_state in ("complete", "expired", "failed", "canceled"):
         raise HTTPException(status_code=409, detail="Cannot cancel")
-    st.state = "canceled"
-    st.stage = "canceled"
-    st.updated_at = time.time()
-    return st
+
+    # Update in-memory status
+    if st:
+        st.state = "canceled"
+        st.stage = "canceled"
+        st.updated_at = time.time()
+    else:
+        TRACE_STATUS[trace_id] = TraceStatus(
+            trace_id=trace_id,
+            state="canceled",
+            stage="canceled",
+            progress=0.0,
+            updated_at=time.time(),
+        )
+
+    # Best-effort store update
+    try:
+        if store is not None:
+            store.update_fields(trace_id, state="canceled", stage="canceled")  # type: ignore
+    except Exception:
+        pass
+
+    st_out = TRACE_STATUS.get(trace_id) or TraceStatus(trace_id=trace_id, state="canceled", stage="canceled")
+    try:
+        emit_audit(
+            event="trace.cancel",
+            request=request,
+            tenant_id=getattr(auth, "tenant_id", "anon"),
+            trace_id=trace_id,
+            subject=getattr(auth, "subject", None),
+            scopes=sorted(list(getattr(auth, "scopes", set()))),
+            status=202,
+            reason=None,
+            extra=None,
+        )
+    except Exception:
+        pass
+    return JSONResponse(content=st_out.model_dump(), status_code=202)
+
+# Audit handler for RBAC denials and rate-limit rejections
+@app.exception_handler(HTTPException)
+async def _audit_http_exception_handler(request: Request, exc: HTTPException):
+    try:
+        ctx = getattr(request.state, "auth_ctx", None)
+        tenant_id = getattr(ctx, "tenant_id", "anon") if ctx is not None else "anon"
+        subject = getattr(ctx, "subject", None) if ctx is not None else None
+        scopes = sorted(list(getattr(ctx, "scopes", set()))) if ctx is not None else []
+        event = None
+        if exc.status_code in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN):
+            event = "rbac.deny"
+        elif exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+            event = "rate_limited"
+        if event:
+            reason = None
+            try:
+                if isinstance(exc.detail, dict):
+                    reason = exc.detail.get("code") or exc.detail.get("message")
+            except Exception:
+                reason = None
+            emit_audit(
+                event=event,
+                request=request,
+                tenant_id=tenant_id,
+                trace_id=request.headers.get("x-trace-id"),
+                subject=subject,
+                scopes=scopes,
+                status=exc.status_code,
+                reason=reason,
+                extra=None,
+            )
+    except Exception:
+        pass
+    return await http_exception_handler(request, exc)
 
 
 @app.get("/v1/chat/completions/{id}/explanation")

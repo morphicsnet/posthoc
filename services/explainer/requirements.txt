@@ -7,3 +7,4 @@ uvloop; platform_system != "Windows"
 redis>=5.0.0
 httpx>=0.27
 requests>=2.31
+prometheus-client>=0.20.0

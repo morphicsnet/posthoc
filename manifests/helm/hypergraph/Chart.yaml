@@ -1,0 +1,7 @@
+apiVersion: v2
+name: hypergraph
+description: Production-ready delivery assets for Hypergraph Async Sidecar (Gateway, Explainer, Interceptor)
+type: application
+version: 0.1.0
+# appVersion is parameterized from values
+appVersion: {{ .Values.global.appVersion | quote }}

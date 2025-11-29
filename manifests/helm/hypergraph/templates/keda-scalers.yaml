@@ -1,0 +1,39 @@
+{{- if .Values.explainer.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "hypergraph.fullname" . }}-explainer
+  labels:
+    app.kubernetes.io/component: explainer
+spec:
+  scaleTargetRef:
+    name: {{ include "hypergraph.fullname" . }}-explainer
+  minReplicaCount: {{ .Values.explainer.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.explainer.keda.maxReplicaCount }}
+  cooldownPeriod: 60
+  pollingInterval: 15
+  triggers:
+    # Example: backlog-seconds style metric via Prometheus adapter or REST API exported as a metric.
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-operated.monitoring.svc.cluster.local:9090
+        metricName: hypergraph_backlog_seconds
+        threshold: "{{ printf "%.3f" .Values.explainer.keda.backlogSecondsTarget }}"
+        query: |
+          max(hypergraph_backlog_seconds{app_kubernetes_io_component="explainer",namespace="{{ .Release.Namespace }}"})
+    # Alternative: direct REST scaler example (requires keda-http-add-on or external scaler; placeholder)
+    # - type: metrics-api
+    #   metadata:
+    #     targetValue: "{{ printf "%.3f" .Values.explainer.keda.backlogSecondsTarget }}"
+    #     url: http://{{ include "hypergraph.fullname" . }}-explainer.{{ .Release.Namespace }}.svc.cluster.local:9090/backlog_seconds
+    #     valueLocation: "value"
+    #     authMode: "none"
+    #
+    # Alternative Kafka scaler (commented stub) if envelopes used:
+    # - type: kafka
+    #   metadata:
+    #     bootstrapServers: "kafka:9092"
+    #     consumerGroup: "hypergraph-explainer"
+    #     topic: "envelopes"
+    #     lagThreshold: "500"
+{{- end }}

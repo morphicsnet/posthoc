@@ -3,25 +3,42 @@
 %% TODO: Fill styling after initial review.
 
 ```mermaid
-flowchart TD
-  %% NODES (planned)
-  client["Client SDK / App"]
-  gateway["Gateway (POST /v1/chat/completions)"]
-  interceptor["Interceptor (POST /ingest)"]
-  explainer["Explainer Worker (concept extraction, verification)"]
+flowchart LR
+  %% Node IDs (stable, referenced in docs/architecture.md)
+  client["Client App"]
+  sdk["Python SDK"]
+  gateway["Gateway (Hypergraph API)"]
+  interceptor["Interceptor (Capture)"]
+  explainer["Explainer Worker"]
   redis[("Redis Streams")]
-  postgres[("Postgres (optional)")]
-  llmproxy["LLM Provider/Proxy"]
+  postgres[("Postgres (explanations_v2)")]
+  llmproxy["LLM Provider / Proxy"]
   shadow["Shadow Model (optional)"]
+  webhook["External Webhook Consumer (optional)"]
 
-  %% EDGES (planned)
-  client -- "POST /v1/chat/completions" --> gateway
+  %% Client path
+  client -- "function calls" --> sdk
+  sdk -- "POST /v1/chat/completions" --> gateway
+  gateway -- "200 chat + explanation_metadata (trace_id)" --> client
+
+  %% LLM path
   gateway -- "forward chat" --> llmproxy
-  gateway -- "trace events" --> redis
+
+  %% Trace + work queue
+  gateway -- "XADD hypergraph:completions" --> redis
   client -- "POST /ingest" --> interceptor
-  interceptor -- "enqueue" --> redis
-  explainer -- "consume/process" --> redis
-  explainer -- "write HIF" --> postgres
-  explainer -- "verify" --> shadow
-  client -- "GET /v1/traces/{trace_id}/graph" --> gateway
+  interceptor -- "XADD hypergraph:completions" --> redis
+  redis -- "XREADGROUP (explainer)" --> explainer
+  explainer -- "XACK" --> redis
+
+  %% Hypergraph persistence
+  explainer -- "UPSERT HIF" --> postgres
+  gateway -- "SELECT HIF by {id}/trace" --> postgres
+
+  %% Retrieval + progress
+  client -- "GET /v1/traces/{trace_id}/status|graph|stream" --> gateway
+  gateway -- "POST complete|failed" --> webhook
+
+  %% Optional verification
+  explainer -- "verify interactions" --> shadow
 ```

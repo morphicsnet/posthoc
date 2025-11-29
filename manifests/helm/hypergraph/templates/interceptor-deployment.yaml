@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hypergraph.fullname" . }}-interceptor
+  labels:
+    app.kubernetes.io/component: interceptor
+spec:
+  replicas: {{ .Values.interceptor.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hypergraph.name" . }}
+      app.kubernetes.io/component: interceptor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "hypergraph.name" . }}
+        app.kubernetes.io/component: interceptor
+    spec:
+      containers:
+        - name: interceptor
+          image: {{ .Values.interceptor.image | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "hypergraph.fullname" . }}-env
+          env:
+          {{- range $k, $v := .Values.interceptor.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+{{ toYaml .Values.interceptor.resources | indent 12 }}
