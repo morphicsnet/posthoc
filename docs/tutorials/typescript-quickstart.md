@@ -1,4 +1,4 @@
-# TypeScript/React Quickstart: Fetch and Render HIF
+# TypeScript/React Quickstart: Fetch and Render HIF v1
 
 This quickstart shows how to:
 - Fetch a HIF graph for a trace using the ExplainabilityClient
@@ -16,8 +16,9 @@ Base URL (local): http://localhost:8080
 ## Prerequisites
 
 - Node.js 18+
-- A local Gateway running at http://localhost:8080, with the Async Sidecar stack
+- A local Gateway running at http://localhost:8080, with the Async Sidecar services
 - A trace_id you can poll (create one by calling POST /v1/chat/completions with x-explain-mode: hypergraph)
+- Note: When AUTH_MODE=static is enabled, direct Gateway calls require Authorization: Bearer $TOKEN; in code, pass apiKey to ExplainabilityClient/HypergraphViewer.
 
 ## Install the UI/SDK package
 

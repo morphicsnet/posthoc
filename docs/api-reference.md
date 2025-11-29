@@ -8,6 +8,7 @@ Base URL (local): http://localhost:8080
 
 ## Authentication
 - Send bearer token: Authorization: Bearer <token>
+- Required when AUTH_MODE=static; omit if AUTH_MODE=none.
 
 ## Explainability and Observability Headers
 The Gateway accepts an extensible family of headers:

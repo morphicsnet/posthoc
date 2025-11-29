@@ -1,16 +1,16 @@
-# Python Quickstart: Chat + Explainability (HIF)
+# Python Quickstart: Chat + Explainability (HIF v1)
 
 This guide shows how to:
 - Send an OpenAI-compatible chat request to the Gateway
 - Request explainability via headers
-- Poll and fetch the HIF graph
+- Poll and fetch the HIF v1 graph
 - Inspect top features and write the graph to disk
 - Handle errors, timeouts, and optional auth
 
 References:
 - Python SDK [Client](sdks/python/your_company_explainability/your_company_explainability/client.py:143), [ChatCompletions.create()](sdks/python/your_company_explainability/your_company_explainability/client.py:97), and [ChatResponse.get_explanation()](sdks/python/your_company_explainability/your_company_explainability/client.py:31)
 - API Reference: [docs/api-reference.md](docs/api-reference.md:1)
-- HIF Schema Reference: [docs/hif-schema.md](docs/hif-schema.md:1)
+- HIF Schema Reference (v1): [docs/hif-schema.md](docs/hif-schema.md:1)
 - HIF validator CLI: [libs/hif/validator.py](libs/hif/validator.py:1)
 
 Base URL (local): http://localhost:8080
@@ -32,7 +32,7 @@ export PYTHONPATH="$PWD/sdks/python/your_company_explainability:$PYTHONPATH"
 ```python
 #!/usr/bin/env python3
 """
-Minimal Python example: send chat, request explainability, fetch HIF,
+Minimal Python example: send chat, request explainability, fetch HIF v1,
 print top features, and write the graph to disk.
 
 Requires:

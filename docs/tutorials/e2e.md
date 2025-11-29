@@ -2,13 +2,13 @@
 
 Audience: Both
 
-Goal: From prompt to hypergraph (HIF), running locally.
+Goal: From prompt to hypergraph (HIF v1), running locally.
 
 See also:
 - Python Quickstart: [docs/tutorials/python-quickstart.md](docs/tutorials/python-quickstart.md)
 - TypeScript/React Quickstart: [docs/tutorials/typescript-quickstart.md](docs/tutorials/typescript-quickstart.md)
 
-## Step 1: Launch the stack
+## Step 1: Launch the Async Sidecar services
 Follow [docs/setup.md](docs/setup.md) to run Redis, Postgres, Interceptor, Explainer, and Gateway.
 
 ## Step 2: Send a chat request
@@ -19,7 +19,7 @@ Use the SDK quickstart:
 Or curl:
 ```
 curl -sS -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \# omit if AUTH_MODE=none
+  -H "Authorization: Bearer $TOKEN" \# required when AUTH_MODE=static
   -H "x-explain-mode: hypergraph" \
   -H "x-explain-granularity: sentence" \
   -H "x-explain-features: sae-gpt4-2m" \

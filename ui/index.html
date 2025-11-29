@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Async Sidecar - Ops Command Center</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="./assets/app.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Async Sidecar - Operational Command Center</h1>
+      <nav>
+        <a href="#" data-view="cmd">Command Center</a>
+        <a href="#" data-view="tests">Tests</a>
+        <a href="#" data-view="observability">Observability</a>
+        <a href="#" data-view="deployments">Deployments</a>
+        <a href="#" data-view="autoscaling">Autoscaling</a>
+        <a href="#" data-view="security">Security & Audit</a>
+        <a href="#" data-view="compliance">API Compliance</a>
+        <a href="#" data-view="reports">Reports</a>
+        <a href="#" data-view="settings">Settings</a>
+      </nav>
+    </header>
+    <main>
+      <section id="view"></section>
+    </main>
+    <footer>
+      <small>Backed by control plane API [app.py](control_plane/app.py:1)</small>
+    </footer>
+    <script src="./assets/app.js"></script>
+  </body>
+</html>

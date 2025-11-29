@@ -1,0 +1,25 @@
+{
+  "chat": {
+    "count": 27579,
+    "errors": {
+      "4xx": 0,
+      "5xx": 27579,
+      "rate": 1.0
+    },
+    "latency_ms": {
+      "p50": 507.0,
+      "p95": 1160.0,
+      "p99": 1190.0
+    },
+    "rps": 221.83392980313297
+  },
+  "explanation": {
+    "count": 8268,
+    "expired_pct": 0.0,
+    "failed_pct": 0.0,
+    "sla_p95_ms": {
+      "sentence": 0.0,
+      "token": 0.0
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # Documentation
 
-This folder contains the official docs for the Your Company Hypergraph Explainability Stack. If you are new, start with the overview, then run a local stack, and finally try the end‑to‑end tutorial.
+This folder contains the official docs for the Async Sidecar explainability architecture (formerly "Your Company Hypergraph Explainability Stack"). If you are new, start with the overview, then run the Async Sidecar locally, and finally try the end‑to‑end tutorial.
 
 - Architecture overview: [docs/architecture.md](docs/architecture.md:1)
 - Setup (Docker + local): [docs/setup.md](docs/setup.md:1)
@@ -48,8 +48,9 @@ Key repo references used throughout:
 
 ## Terminology
 
+- Async Sidecar: Architectural pattern that decouples inference (Gateway) from explanation (Interceptor + Explainer) via asynchronous trace processing.
 - Hypergraph API (HIF): A vendor-neutral JSON schema and HTTP contract for explainability artifacts and graphs.
-- HIF (v1): Legacy interchange format documented in [docs/hif-schema.md](docs/hif-schema.md:1) and defined in [libs/hif/schema.json](libs/hif/schema.json).
+- HIF v1: Interchange format documented in [docs/hif-schema.md](docs/hif-schema.md:1) and defined in [libs/hif/schema.json](libs/hif/schema.json).
 - Gateway: OpenAI-compatible front door; see [create_chat_completion()](services/gateway/src/app.py:540).
 - Interceptor: Ingests model I/O to Redis Streams; see [services/interceptor/src/capture.py](services/interceptor/src/capture.py).
 - Explainer: Consumes traces, extracts concepts, verifies; see [services/explainer/src/worker.py](services/explainer/src/worker.py).

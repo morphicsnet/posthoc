@@ -1,0 +1,72 @@
+{
+  "assumptions": {
+    "data_quality_note": "StatusStore JSON missing; results derived from audit only.",
+    "throughput_sentence_per_gpu": {
+      "max": 6.0,
+      "min": 3.0
+    },
+    "throughput_token_per_gpu": {
+      "max": 0.8,
+      "min": 0.4
+    },
+    "token_mix": 0.1
+  },
+  "attach_rate": {
+    "mean": 0.0,
+    "median": 0.0,
+    "meta": {
+      "bucket_seconds": 60,
+      "buckets_analyzed": 0,
+      "now": 1764381376,
+      "rates_count": 0,
+      "window_start": 1764377776
+    },
+    "p95": 0.0
+  },
+  "capacity_recommendations": [
+    {
+      "concurrency": 300,
+      "explanation_qps": {
+        "mean": 0.0,
+        "p95": 0.0
+      },
+      "mix": {
+        "sentence": 0.9,
+        "token": 0.1
+      },
+      "replicas": {
+        "mean": {
+          "conservative": {
+            "sentence": 0,
+            "token": 0,
+            "total": 0
+          },
+          "optimistic": {
+            "sentence": 1,
+            "token": 1,
+            "total": 2
+          }
+        },
+        "p95": {
+          "conservative": {
+            "sentence": 0,
+            "token": 0,
+            "total": 0
+          },
+          "optimistic": {
+            "sentence": 1,
+            "token": 1,
+            "total": 2
+          }
+        }
+      }
+    }
+  ],
+  "meta": {
+    "bucket_seconds": 60,
+    "buckets_analyzed": 0,
+    "now": 1764381376,
+    "rates_count": 0,
+    "window_start": 1764377776
+  }
+}

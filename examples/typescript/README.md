@@ -11,6 +11,8 @@ References:
 
 Gateway (local): http://localhost:8080
 
+Note: When AUTH_MODE=static is enabled, direct Gateway calls require Authorization: Bearer $TOKEN (or pass apiKey to the client).
+
 ## 0) Prerequisites
 
 - Node.js 18+ and npm or pnpm

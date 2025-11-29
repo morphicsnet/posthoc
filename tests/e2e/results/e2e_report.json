@@ -1,0 +1,283 @@
+{
+  "environment": {
+    "argocd_manifest": "manifests/argocd/argocd-apps.yaml",
+    "attach_rate": 0.3,
+    "audit_log": "/var/log/hypergraph/audit.log",
+    "auth_read_set": false,
+    "auth_write_set": false,
+    "base_url": "http://localhost:8080",
+    "chaos_control": "/tmp/hif/chaos.json",
+    "concurrency": 300,
+    "helm_chart": "manifests/helm/hypergraph",
+    "karpenter_file": "manifests/karpenter/karpenter-provisioners.yaml",
+    "keda_template": "manifests/helm/hypergraph/templates/keda-scalers.yaml",
+    "load_duration": 120,
+    "metrics_explainer": "http://localhost:9090/metrics",
+    "metrics_gateway": "http://localhost:8080/metrics",
+    "s3_check": "file:///tmp/hif",
+    "status_json": "/tmp/hif/status.json",
+    "tenant_a": "tA",
+    "tenant_b": "tB",
+    "token_mix": 0.1,
+    "tools": {
+      "argocd": {
+        "path": null,
+        "version": null
+      },
+      "git": {
+        "path": "/opt/local/bin/git",
+        "revision": "7bd11f2"
+      },
+      "helm": {
+        "path": null,
+        "version": null
+      },
+      "kubectl": {
+        "path": "/usr/local/bin/kubectl",
+        "version": "clientVersion:\n  buildDate: \"2025-02-12T21:26:09Z\"\n  compiler: gc\n  gitCommit: 67a30c0adcf52bd3f56ff0893ce19966be12991f\n  gitTreeState: clean\n  gitVersion: v1.32.2\n  goVersion: go1.23.6\n  major: \"1\"\n  minor: \"32\"\n  platform: darwin/arm64\nkustomizeVersion: v5.5.0"
+      }
+    }
+  },
+  "generated_at": 1764381376,
+  "results": [
+    {
+      "details": {
+        "auth_enabled": false
+      },
+      "duration_ms": null,
+      "reason": "AUTH_MODE appears disabled (probe without token did not return 401/403)",
+      "status": "SKIP",
+      "test": "test_gateway_rbac.py",
+      "ts": 1764381161
+    },
+    {
+      "details": {
+        "subtests": [
+          {
+            "details": {},
+            "duration_ms": null,
+            "reason": "chat upstream error 599: [Errno 61] Connection refused",
+            "status": "SKIP",
+            "test": "trace_workflow[sentence]",
+            "ts": 1764381161
+          },
+          {
+            "details": {},
+            "duration_ms": null,
+            "reason": "chat upstream error 599: [Errno 61] Connection refused",
+            "status": "SKIP",
+            "test": "trace_workflow[token]",
+            "ts": 1764381161
+          }
+        ]
+      },
+      "duration_ms": 82,
+      "reason": null,
+      "status": "SKIP",
+      "test": "test_trace_workflow.py",
+      "ts": 1764381161
+    },
+    {
+      "details": {
+        "auth_enabled": false
+      },
+      "duration_ms": null,
+      "reason": "AUTH_MODE appears disabled (no 401/403 on unauthenticated probe)",
+      "status": "SKIP",
+      "test": "test_security_tenant_isolation.py",
+      "ts": 1764381161
+    },
+    {
+      "details": {
+        "metrics_gateway": "http://localhost:8080/metrics"
+      },
+      "duration_ms": null,
+      "reason": "Gateway /metrics unavailable or missing core metrics",
+      "status": "SKIP",
+      "test": "test_observability.py",
+      "ts": 1764381161
+    },
+    {
+      "details": {
+        "graphs_checked": {
+          "ok": 0,
+          "total": 12
+        },
+        "metrics": {
+          "bp_signals_present": {
+            "explainer": false,
+            "gateway": false,
+            "names": []
+          },
+          "explainer_endpoint": "http://localhost:9090/metrics",
+          "gateway_endpoint": "http://localhost:8080/metrics"
+        },
+        "samples": {
+          "chat_count": 27579,
+          "expl_count": 8268
+        },
+        "summary": {
+          "chat": {
+            "count": 27579,
+            "errors": {
+              "4xx": 0,
+              "5xx": 27579,
+              "rate": 1.0
+            },
+            "latency_ms": {
+              "p50": 507.0,
+              "p95": 1160.0,
+              "p99": 1190.0
+            },
+            "rps": 221.83392980313297
+          },
+          "explanation": {
+            "count": 8268,
+            "expired_pct": 0.0,
+            "failed_pct": 0.0,
+            "sla_p95_ms": {
+              "sentence": 0.0,
+              "token": 0.0
+            }
+          }
+        }
+      },
+      "duration_ms": null,
+      "reason": "no graphs retrievable for sampled attached traces",
+      "status": "FAIL",
+      "test": "test_backpressure_under_load.py",
+      "ts": 1764381285
+    },
+    {
+      "details": {
+        "expired_pct": 0.0,
+        "explanations_count": 8268,
+        "failed_pct": 0.0,
+        "p95_sentence_ms": 0.0,
+        "p95_token_ms": 0.0,
+        "thresholds": {
+          "sentence_ms": 2000,
+          "token_ms": 8000
+        }
+      },
+      "duration_ms": null,
+      "reason": null,
+      "status": "PASS",
+      "test": "test_slo_adherence.py",
+      "ts": 1764381285
+    },
+    {
+      "details": {
+        "chart_dir": "manifests/helm/hypergraph",
+        "helm": {
+          "available": false
+        }
+      },
+      "duration_ms": null,
+      "reason": "helm not found in PATH",
+      "status": "SKIP",
+      "test": "test_deploy_artifacts.py",
+      "ts": 1764381285
+    },
+    {
+      "details": {
+        "karpenter": {
+          "cpu_class": true,
+          "cpu_pool": true,
+          "gpu_class": true,
+          "gpu_pool": true,
+          "has_requirements": true,
+          "has_role": true,
+          "ok": true,
+          "reason": "ok"
+        },
+        "karpenter_file": "manifests/karpenter/karpenter-provisioners.yaml",
+        "keda": {
+          "ok": true,
+          "query_block_present": true,
+          "reason": "ok",
+          "refs_ok": true,
+          "threshold_ref_ok": true,
+          "values": {
+            "backlogSecondsTarget": 1.0,
+            "maxReplicaCount": 16,
+            "minReplicaCount": 2
+          }
+        },
+        "keda_template": "manifests/helm/hypergraph/templates/keda-scalers.yaml",
+        "values_path": "manifests/helm/hypergraph/values.yaml"
+      },
+      "duration_ms": null,
+      "reason": null,
+      "status": "PASS",
+      "test": "test_autoscaling_policies.py",
+      "ts": 1764381285
+    },
+    {
+      "details": {},
+      "duration_ms": null,
+      "reason": "baseline polling timeout (environment not ready)",
+      "status": "SKIP",
+      "test": "test_chaos_recovery.py",
+      "ts": 1764381375
+    },
+    {
+      "details": {
+        "analyzer_output": "tools/analysis/results/attach_rate_summary.json",
+        "recommendation": {
+          "concurrency": 300,
+          "mean_optimistic_total": 2,
+          "p95_conservative_total": 0
+        },
+        "slack_allowance": 2,
+        "values": {
+          "maxReplicaCount": 16,
+          "minReplicaCount": 2
+        }
+      },
+      "duration_ms": null,
+      "reason": null,
+      "status": "PASS",
+      "test": "test_capacity_attach_rate.py",
+      "ts": 1764381376
+    },
+    {
+      "details": {},
+      "duration_ms": null,
+      "reason": "audit log not found at /var/log/hypergraph/audit.log",
+      "status": "SKIP",
+      "test": "test_audit_pii.py",
+      "ts": 1764381376
+    },
+    {
+      "details": {
+        "change_mgmt_hints": {
+          "mentions_adr": true,
+          "mentions_deprecation_window": true,
+          "mentions_freeze": true,
+          "mentions_v1": true
+        },
+        "change_mgmt_ok": true,
+        "has_v2_paths": false,
+        "non_v1_paths": [],
+        "openapi_paths_count": 7,
+        "runtime": {
+          "hif_error": null,
+          "hif_version_ok": null,
+          "note": "chat upstream error 599: [Errno 61] Connection refused"
+        }
+      },
+      "duration_ms": null,
+      "reason": null,
+      "status": "PASS",
+      "test": "test_api_versioning.py",
+      "ts": 1764381376
+    }
+  ],
+  "stats": {
+    "failed": 1,
+    "passed": 4,
+    "skipped": 7,
+    "total": 12
+  }
+}
